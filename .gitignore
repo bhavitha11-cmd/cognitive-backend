@@ -1,0 +1,19 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest / testing cache
+.pytest_cache/
+
+# Local configuration files
+.env
+
+# Alembic migrations cache
+migrations/versions/*.pyc

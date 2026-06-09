@@ -1,0 +1,284 @@
+import uuid as uuid_lib
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.database.session import get_db
+from app.schemas.common import APIResponse
+from app.schemas.employee import (
+    EmployeeCreate,
+    EmployeeUpdate,
+    TransferReportsRequest,
+    TransferTeamRequest,
+    TransferDepartmentRequest,
+)
+
+from app.dependencies import get_current_user
+
+router = APIRouter(
+    prefix="/employees",
+    tags=["Employees"],
+    dependencies=[Depends(get_current_user)],
+)
+
+
+class BulkIdsRequest(BaseModel):
+    ids: list[str]
+
+
+def _get_service(db: Session = Depends(get_db)):
+    from app.services.employee_service import EmployeeService
+    return EmployeeService(db)
+
+
+@router.get("", response_model=APIResponse)
+def list_employees(
+    search: str | None = Query(None, description="Search by name or email"),
+    skip: int = Query(0, ge=0, description="Records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Records to return"),
+    department_id: str | None = Query(None, description="Filter by department UUID"),
+    account_status: str | None = Query(None, description="Filter by account status"),
+    service=Depends(_get_service),
+):
+    from uuid import UUID as _UUID
+    dept_uuid = None
+    if department_id:
+        try:
+            dept_uuid = _UUID(department_id)
+        except ValueError:
+            pass
+    employees, total = service.get_all(
+        search=search,
+        skip=skip,
+        limit=limit,
+        department_id=dept_uuid,
+        account_status=account_status,
+    )
+    return APIResponse(
+        success=True,
+        message="Employees retrieved successfully",
+        data={
+            "employees": [e.model_dump() for e in employees],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+        },
+    )
+
+
+@router.post("", response_model=APIResponse, status_code=status.HTTP_201_CREATED)
+def create_employee(employee_in: EmployeeCreate, service=Depends(_get_service)):
+    try:
+        employee = service.create(employee_in)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Employee created successfully",
+        data={"employee": employee.model_dump()},
+    )
+
+
+@router.get("/{id}", response_model=APIResponse)
+def get_employee(id: str, service=Depends(_get_service)):
+    try:
+        resolved = service._resolve_id(id)
+        employee = service.get_by_id(resolved)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Employee retrieved successfully",
+        data={"employee": employee.model_dump()},
+    )
+
+
+@router.put("/{id}", response_model=APIResponse)
+def update_employee(id: str, employee_in: EmployeeUpdate, service=Depends(_get_service)):
+    try:
+        resolved = service._resolve_id(id)
+        employee = service.update(resolved, employee_in)
+    except ValueError as e:
+        if "not found" in str(e):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Employee updated successfully",
+        data={"employee": employee.model_dump()},
+    )
+
+
+@router.delete("/{id}", response_model=APIResponse)
+def delete_employee(id: str, service=Depends(_get_service)):
+    try:
+        resolved = service._resolve_id(id)
+        service.delete(resolved)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(success=True, message="Employee deleted successfully", data=None)
+
+
+# ---- Offboarding Workflow ----
+
+
+@router.post("/{id}/offboard/check", response_model=APIResponse)
+def offboard_check(id: str, service=Depends(_get_service)):
+    try:
+        resolved = service._resolve_id(id)
+        check = service.offboard_check(resolved)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Offboarding check complete",
+        data=check.model_dump(),
+    )
+
+
+@router.post("/{id}/offboard/confirm", response_model=APIResponse)
+def offboard_confirm(
+    id: str,
+    final_status: str = Query("RESIGNED", description="Final status: RESIGNED or TERMINATED"),
+    service=Depends(_get_service),
+):
+    try:
+        resolved = service._resolve_id(id)
+        employee = service.offboard_confirm(resolved, final_status)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=f"Employee offboarded with status '{final_status}'",
+        data={"employee": employee.model_dump()},
+    )
+
+
+@router.post("/{id}/transfer-reports", response_model=APIResponse)
+def transfer_reports(
+    id: str,
+    body: TransferReportsRequest,
+    service=Depends(_get_service),
+):
+    try:
+        resolved = service._resolve_id(id)
+        results = service.transfer_reports(resolved, body.new_manager_id, body.employee_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=f"{len(results)} direct report(s) transferred",
+        data={"transferred": [e.model_dump() for e in results]},
+    )
+
+
+@router.post("/{id}/transfer-teams", response_model=APIResponse)
+def transfer_teams(
+    id: str,
+    body: TransferTeamRequest,
+    service=Depends(_get_service),
+):
+    try:
+        resolved = service._resolve_id(id)
+        service.transfer_teams(resolved, body.new_lead_id, body.team_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=f"{len(body.team_ids)} team(s) leadership transferred",
+    )
+
+
+@router.post("/{id}/transfer-departments", response_model=APIResponse)
+def transfer_departments(
+    id: str,
+    body: TransferDepartmentRequest,
+    service=Depends(_get_service),
+):
+    try:
+        resolved = service._resolve_id(id)
+        service.transfer_departments(resolved, body.new_head_id, body.department_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=f"{len(body.department_ids)} department(s) head transferred",
+    )
+
+
+# ---- History Endpoints ----
+
+
+@router.get("/{id}/role-history", response_model=APIResponse)
+def get_role_history(id: str, service=Depends(_get_service)):
+    resolved = service._resolve_id(id)
+    history = service.get_role_history(resolved)
+    return APIResponse(
+        success=True,
+        message="Role history retrieved",
+        data={"history": history},
+    )
+
+
+@router.get("/{id}/reporting-history", response_model=APIResponse)
+def get_reporting_history(id: str, service=Depends(_get_service)):
+    resolved = service._resolve_id(id)
+    history = service.get_reporting_history(resolved)
+    return APIResponse(
+        success=True,
+        message="Reporting history retrieved",
+        data={"history": history},
+    )
+
+
+@router.get("/{id}/direct-reports", response_model=APIResponse)
+def get_direct_reports(id: str, service=Depends(_get_service)):
+    from app.services.employee_service import EmployeeService
+    resolved = service._resolve_id(id)
+    check = service.offboard_check(resolved)
+    direct_report_ids = []
+    for b in check.blockers:
+        if b.type == "direct_reports":
+            direct_report_ids = [item["id"] for item in b.items]
+    return APIResponse(
+        success=True,
+        message="Direct reports retrieved",
+        data={"direct_report_ids": direct_report_ids},
+    )
+
+
+# ---- Deprecated endpoints ----
+
+
+@router.patch("/{id}/deactivate", response_model=APIResponse)
+def deactivate_employee(id: str, service=Depends(_get_service)):
+    try:
+        resolved = service._resolve_id(id)
+        employee = service.deactivate(resolved)
+    except ValueError as e:
+        if "not found" in str(e):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Employee deactivated successfully",
+        data={"employee": employee.model_dump()},
+    )
+
+
+@router.post("/bulk-deactivate", response_model=APIResponse)
+def bulk_deactivate_employees(body: BulkIdsRequest, service=Depends(_get_service)):
+    try:
+        service.bulk_deactivate(body.ids)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(success=True, message="Deprecated endpoint", data=None)
+
+
+@router.post("/bulk-delete", response_model=APIResponse)
+def bulk_delete_employees(body: BulkIdsRequest, service=Depends(_get_service)):
+    try:
+        service.bulk_delete(body.ids)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(success=True, message="Deprecated endpoint", data=None)
