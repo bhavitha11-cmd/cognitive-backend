@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,24 +13,23 @@ from app.database.base import Base
 class Team(Base):
     __tablename__ = "teams"
 
+    __table_args__ = (
+        Index("ix_teams_department_id", "department_id"),
+        Index("ix_teams_is_active", "is_active"),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    team_name: Mapped[str] = mapped_column(
-        String(200), unique=True, nullable=False
-    )
-    team_code: Mapped[str] = mapped_column(
-        String(50), unique=True, nullable=False
-    )
+    team_name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    team_code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     department_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("departments.id", ondelete="SET NULL"),
         nullable=True,
     )
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -41,14 +40,11 @@ class Team(Base):
         nullable=False,
     )
 
-    department: Mapped[Department | None] = relationship(
+    department: Mapped["Department | None"] = relationship(
         "Department", foreign_keys=[department_id]
     )
-
-    members: Mapped[list[TeamMember]] = relationship(
-        "TeamMember",
-        back_populates="team",
-        cascade="all, delete-orphan",
+    members: Mapped[list["TeamMember"]] = relationship(
+        "TeamMember", back_populates="team", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

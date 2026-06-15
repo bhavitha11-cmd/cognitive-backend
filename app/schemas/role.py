@@ -1,13 +1,22 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+
+
+VALID_MODULES = {
+    "HR", "Clients", "Finance", "Projects",
+    "Inventory", "Settings", "Reports", "Timesheets", "Tasks",
+    "Attendance", "Leave", "Analytics",
+}
+
+PERMISSION_ACTIONS = ["can_view", "can_create", "can_edit", "can_delete", "can_approve", "can_export"]
 
 
 class RoleBase(BaseModel):
-    name: str = Field(..., min_length=2, max_length=100, description="Name of the role")
-    description: str | None = Field(None, description="Detailed description of the role")
-    parent_role_id: uuid.UUID | None = Field(None, description="UUID of the parent role it reports to")
-    is_active: bool = Field(True, description="Active status of the role")
+    name: str = Field(..., min_length=2, max_length=100)
+    description: str | None = Field(None, max_length=500)
+    parent_role_id: uuid.UUID | None = None
+    is_active: bool = True
 
 
 class RoleCreate(RoleBase):
@@ -16,32 +25,13 @@ class RoleCreate(RoleBase):
 
 class RoleUpdate(BaseModel):
     name: str | None = Field(None, min_length=2, max_length=100)
-    description: str | None = None
+    description: str | None = Field(None, max_length=500)
     parent_role_id: uuid.UUID | None = None
     is_active: bool | None = None
 
 
-class RoleResponse(RoleBase):
-    id: uuid.UUID
-    role_code: str
-    hierarchy_level: int
-    is_system_role: bool
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-VALID_MODULES = {
-    "HR", "Clients", "Finance", "Projects",
-    "Inventory", "Settings", "Reports",
-}
-
-PERMISSION_ACTIONS = ["can_view", "can_create", "can_edit", "can_delete", "can_approve", "can_export"]
-
-
 class RolePermissionItem(BaseModel):
-    module_name: str = Field(..., description="Module name (e.g. Employees, Roles)")
+    module_name: str = Field(..., description="Module name")
     can_view: bool = False
     can_create: bool = False
     can_edit: bool = False
@@ -49,11 +39,31 @@ class RolePermissionItem(BaseModel):
     can_approve: bool = False
     can_export: bool = False
 
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("module_name")
     @classmethod
     def validate_module(cls, v: str) -> str:
         if v not in VALID_MODULES:
-            raise ValueError(f"Invalid module '{v}'. Must be one of {VALID_MODULES}")
+            raise ValueError(f"Invalid module '{v}'. Must be one of {sorted(VALID_MODULES)}")
         return v
+
+
+class RoleResponse(RoleBase):
+    id: uuid.UUID
+    role_code: str
+    hierarchy_level: int
+    is_system_role: bool
+    is_super_admin: bool = False
+    created_at: datetime
+    updated_at: datetime
+    permissions: list[RolePermissionItem] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RolePermissionList(BaseModel):
+    permissions: list[RolePermissionItem]
 
 
 class RolePermissionResponse(BaseModel):

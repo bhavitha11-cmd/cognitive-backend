@@ -39,9 +39,10 @@ TERMINAL_STATUSES = {"RESIGNED", "TERMINATED"}
 
 
 class EmployeeService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, current_user_id=None):
         self.db = db
         self.repo = EmployeeRepository(db)
+        self.current_user_id = current_user_id
 
     def _resolve_id(self, id_str: str) -> UUID:
         try:
@@ -196,6 +197,11 @@ class EmployeeService:
             self._validate_manager(data.reporting_manager_id)
             self._detect_circular_reporting(None, data.reporting_manager_id)
 
+        if data.department_id:
+            dept = self.db.get(Department, data.department_id)
+            if dept and not dept.is_active:
+                raise ValueError("Cannot assign employee to an inactive department")
+
         status = data.account_status.upper() if data.account_status else "ACTIVE"
         if status not in STATUS_TRANSITIONS:
             raise ValueError(f"Invalid account status: {status}")
@@ -212,48 +218,56 @@ class EmployeeService:
         if not employee_data.get("display_name"):
             employee_data["display_name"] = f"{data.first_name} {data.last_name}".strip()
 
-        employee = self.repo.create(employee_data)
+        try:
+            employee = Employee(**employee_data)
+            self.db.add(employee)
+            self.db.flush()  # get ID without committing
 
-        for role_id_str in data.role_ids:
-            self.repo.assign_role(employee.id, UUID(role_id_str))
+            for role_id in data.role_ids:
+                emp_role = __import__("app.models.employee_role", fromlist=["EmployeeRole"]).EmployeeRole(
+                    employee_id=employee.id, role_id=role_id
+                )
+                self.db.add(emp_role)
 
-        # Handle Department Head setting
-        if is_dept_head and employee.department_id:
-            dept = self.db.get(Department, employee.department_id)
-            if dept:
-                # Set head
-                dept.department_head_id = employee.id
-                self.db.add(dept)
-                self.db.commit()
+            # Handle Department Head setting
+            if is_dept_head and employee.department_id:
+                dept = self.db.get(Department, employee.department_id)
+                if dept:
+                    dept.department_head_id = employee.id
+                    self.db.add(dept)
 
-        # Handle Team assignment
-        if team_id:
-            from app.models.team_member import TeamMember
-            role_in_team = "LEAD" if is_team_lead else "MEMBER"
-            # If lead, demote old leads of this team to MEMBER
-            if is_team_lead:
-                old_leads = self.db.scalars(
-                    select(TeamMember).where(
-                        TeamMember.team_id == team_id,
-                        TeamMember.role_in_team == "LEAD",
-                        TeamMember.left_at.is_(None)
-                    )
-                ).all()
-                for ol in old_leads:
-                    ol.role_in_team = "MEMBER"
-                    self.db.add(ol)
-            
-            new_member = TeamMember(
-                team_id=team_id,
-                employee_id=employee.id,
-                role_in_team=role_in_team,
-                is_primary_team=True
-            )
-            self.db.add(new_member)
+            # Handle Team assignment
+            if team_id:
+                from app.models.team_member import TeamMember
+                role_in_team = "LEAD" if is_team_lead else "MEMBER"
+                if is_team_lead:
+                    old_leads = self.db.scalars(
+                        select(TeamMember).where(
+                            TeamMember.team_id == team_id,
+                            TeamMember.role_in_team == "LEAD",
+                            TeamMember.left_at.is_(None),
+                        )
+                    ).all()
+                    for ol in old_leads:
+                        ol.role_in_team = "MEMBER"
+                        self.db.add(ol)
+                new_member = TeamMember(
+                    team_id=team_id,
+                    employee_id=employee.id,
+                    role_in_team=role_in_team,
+                    is_primary_team=True,
+                )
+                self.db.add(new_member)
+
             self.db.commit()
+            self.db.refresh(employee)
+        except Exception:
+            self.db.rollback()
+            raise
 
         AuditService.log(
             self.db, "employee", employee.id, "CREATE",
+            performed_by=self.current_user_id,
             new_value={"employee_code": employee.employee_code, "email": data.email},
         )
         return EmployeeResponse.model_validate(employee)
@@ -417,6 +431,7 @@ class EmployeeService:
 
         AuditService.log(
             self.db, "employee", id, "UPDATE",
+            performed_by=self.current_user_id,
             old_value=old_values if old_values else None,
             new_value=update_data if update_data else None,
         )
@@ -502,6 +517,14 @@ class EmployeeService:
             self.repo.update(report, {"reporting_manager_id": new_manager_id})
             self._record_reporting_change(report, old_mgr_id, new_manager_id)
             results.append(EmployeeResponse.model_validate(report))
+        AuditService.log(
+            self.db, "employee", employee_id, "TRANSFER_REPORTS",
+            performed_by=self.current_user_id,
+            new_value={
+                "new_manager_id": str(new_manager_id),
+                "transferred_report_ids": [str(rid) for rid in report_ids],
+            },
+        )
         return results
 
     def transfer_teams(self, employee_id: UUID, new_lead_id: UUID, team_ids: list[UUID]) -> None:
@@ -517,8 +540,8 @@ class EmployeeService:
             if not member or member.left_at is not None:
                 continue
             member_repo.update(member, {
-                "left_at": date.today().isoformat(),
-                "is_primary_team": False
+                "left_at": datetime.utcnow(),
+                "is_primary_team": False,
             })
             # Assign new lead
             existing_new = member_repo.get_by_team_and_employee(team_id, new_lead_id)
@@ -540,6 +563,14 @@ class EmployeeService:
                 )
                 self.db.add(new_member)
         self.db.commit()
+        AuditService.log(
+            self.db, "employee", employee_id, "TRANSFER_TEAMS",
+            performed_by=self.current_user_id,
+            new_value={
+                "new_lead_id": str(new_lead_id),
+                "transferred_team_ids": [str(tid) for tid in team_ids],
+            },
+        )
 
     def transfer_departments(self, employee_id: UUID, new_head_id: UUID, department_ids: list[UUID]) -> None:
         new_head = self.repo.get_by_id(new_head_id)
@@ -550,6 +581,14 @@ class EmployeeService:
             if dept and dept.department_head_id == employee_id:
                 dept.department_head_id = new_head_id
         self.db.commit()
+        AuditService.log(
+            self.db, "employee", employee_id, "TRANSFER_DEPARTMENTS",
+            performed_by=self.current_user_id,
+            new_value={
+                "new_head_id": str(new_head_id),
+                "transferred_department_ids": [str(did) for did in department_ids],
+            },
+        )
 
     def offboard_confirm(self, id: UUID, final_status: str = "RESIGNED") -> EmployeeResponse:
         check = self.offboard_check(id)
@@ -568,6 +607,7 @@ class EmployeeService:
         })
         AuditService.log(
             self.db, "employee", id, "OFFBOARD",
+            performed_by=self.current_user_id,
             old_value={"account_status": old_status},
             new_value={"account_status": final_status},
         )
@@ -593,6 +633,7 @@ class EmployeeService:
             self.repo.delete(employee)
             AuditService.log(
                 self.db, "employee", id, "DELETE",
+                performed_by=self.current_user_id,
                 old_value={"employee_code": employee.employee_code, "email": employee.email},
             )
             return

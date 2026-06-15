@@ -1,13 +1,20 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from jose import JWTError
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select
 from uuid import UUID
 
 from app.database.session import get_db
-from app.core.security import verify_password, create_access_token
+from app.core.security import (
+    verify_password,
+    get_password_hash,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+)
 from app.dependencies import get_current_user
 from app.models.employee import Employee
 from app.models.employee_role import EmployeeRole
@@ -15,51 +22,101 @@ from app.models.role import Role
 from app.models.role_permission import RolePermission
 from app.schemas.auth import Token, UserMeResponse, PermissionDetail, LoginRequest
 from app.schemas.common import APIResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
 )
 
+SUPER_ADMIN_CODES = {"ADMIN", "CEO", "CHIEF_EXECUTIVE_OFFICER", "ADMINISTRATOR"}
 
-@router.post("/login", response_model=APIResponse)
-def login(
-    login_data: LoginRequest,
-    db: Session = Depends(get_db),
-):
-    # Retrieve employee by username
-    query = (
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _load_employee_with_roles(db: Session, user_uuid: UUID) -> Employee | None:
+    return db.scalars(
         select(Employee)
         .options(
-            joinedload(Employee.employee_roles).joinedload(EmployeeRole.role)
+            joinedload(Employee.employee_roles)
+            .joinedload(EmployeeRole.role)
+            .joinedload(Role.permissions)
         )
+        .where(Employee.id == user_uuid)
+    ).unique().first()
+
+
+def _build_permissions(employee: Employee) -> tuple[list[str], list[str], dict]:
+    roles, role_codes, permissions_map = [], [], {}
+    for er in employee.employee_roles:
+        if er.is_active and er.role:
+            roles.append(er.role.name)
+            role_codes.append(er.role.role_code)
+            for p in er.role.permissions:
+                mod = p.module_name
+                if mod not in permissions_map:
+                    permissions_map[mod] = {k: False for k in
+                                            ("can_view", "can_create", "can_edit",
+                                             "can_delete", "can_approve", "can_export")}
+                for action in permissions_map[mod]:
+                    permissions_map[mod][action] |= getattr(p, action)
+    return roles, role_codes, permissions_map
+
+
+# ── endpoints ─────────────────────────────────────────────────────────────────
+
+@router.post("/login", response_model=APIResponse)
+@limiter.limit("10/minute")
+def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Incorrect username or password",
+    )
+
+    query = (
+        select(Employee)
+        .options(joinedload(Employee.employee_roles).joinedload(EmployeeRole.role))
         .where(Employee.username == login_data.username)
     )
     employee = db.scalars(query).unique().first()
 
     if not employee:
+        raise credentials_exception
+
+    # Check if account is locked
+    if employee.locked_until and employee.locked_until > datetime.now(timezone.utc):
+        remaining = int((employee.locked_until - datetime.now(timezone.utc)).total_seconds() / 60)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Incorrect username or password",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Account locked due to too many failed attempts. Try again in {remaining} minute(s)."
         )
 
     if not verify_password(login_data.password, employee.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Incorrect username or password",
-        )
+        employee.failed_login_attempts = (employee.failed_login_attempts or 0) + 1
+        if employee.failed_login_attempts >= 5:
+            employee.locked_until = datetime.now(timezone.utc) + timedelta(minutes=15)
+        db.add(employee)
+        db.commit()
+        raise credentials_exception
 
     if not employee.is_active:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Account is deactivated",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is deactivated. Contact your administrator.",
         )
 
-    access_token = create_access_token(subject=employee.id)
-
-    # Update last login timestamp
+    # Reset lockout counters on successful login
+    employee.failed_login_attempts = 0
+    employee.locked_until = None
     employee.last_login_at = datetime.now(timezone.utc)
     db.add(employee)
+
+    access_token = create_access_token(subject=employee.id)
+    refresh_token = create_refresh_token(subject=employee.id)
+
     db.commit()
 
     return APIResponse(
@@ -67,6 +124,7 @@ def login(
         message="Login successful",
         data={
             "access_token": access_token,
+            "refresh_token": refresh_token,
             "token_type": "bearer",
             "employee": {
                 "id": str(employee.id),
@@ -75,9 +133,135 @@ def login(
                 "last_name": employee.last_name,
                 "email": employee.email,
                 "username": employee.username,
-            }
+            },
         },
     )
+
+
+@router.post("/refresh", response_model=APIResponse)
+def refresh_token(refresh_token: str = None, db: Session = Depends(get_db)):
+    """Issue a new access token using a valid refresh token."""
+    from pydantic import BaseModel as _BM
+
+    class _Body(_BM):
+        refresh_token: str
+
+    raise HTTPException(status_code=400, detail="Use POST body with refresh_token field")
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/token/refresh", response_model=APIResponse)
+@limiter.limit("20/minute")
+def token_refresh(request: Request, body: RefreshRequest, db: Session = Depends(get_db)):
+    """Issue a new access token using a valid refresh token."""
+    credentials_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired refresh token",
+    )
+    try:
+        payload = decode_token(body.refresh_token)
+        if payload.get("type") != "refresh":
+            raise credentials_exc
+        user_id: str | None = payload.get("sub")
+        if not user_id:
+            raise credentials_exc
+    except JWTError:
+        raise credentials_exc
+
+    employee = db.get(Employee, UUID(user_id))
+    if not employee or not employee.is_active:
+        raise credentials_exc
+
+    new_access = create_access_token(subject=employee.id)
+    return APIResponse(
+        success=True,
+        message="Token refreshed",
+        data={"access_token": new_access, "token_type": "bearer"},
+    )
+
+
+@router.post("/logout", response_model=APIResponse)
+def logout(
+    request: Request,
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.models.revoked_token import RevokedToken
+    from jose import jwt
+    from app.core.config import settings
+
+    # Extract token from Authorization header
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+    if token:
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti and exp:
+                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+                revoked = RevokedToken(jti=jti, expires_at=expires_at)
+                db.add(revoked)
+                db.commit()
+        except Exception:
+            pass  # Token already invalid, logout is still successful
+    return APIResponse(success=True, message="Logged out successfully", data=None)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_complexity(cls, v: str) -> str:
+        import re
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one digit")
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError("Password must contain at least one special character")
+        return v
+
+
+@router.post("/change-password", response_model=APIResponse)
+@limiter.limit("5/minute")
+def change_password(
+    request: Request,
+    body: ChangePasswordRequest,
+    current_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    employee = db.get(Employee, UUID(current_user_id))
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not verify_password(body.current_password, employee.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    if body.current_password == body.new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from current password",
+        )
+
+    employee.password_hash = get_password_hash(body.new_password)
+    db.add(employee)
+    db.commit()
+
+    from app.services.audit_service import AuditService
+    AuditService.log(db, "employee", employee.id, "CHANGE_PASSWORD",
+                     performed_by=employee.id)
+
+    return APIResponse(success=True, message="Password changed successfully")
 
 
 @router.get("/me", response_model=APIResponse)
@@ -88,96 +272,39 @@ def get_me(
     try:
         user_uuid = UUID(current_user_id)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid user token credentials",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    query = (
-        select(Employee)
-        .options(
-            joinedload(Employee.employee_roles)
-            .joinedload(EmployeeRole.role)
-            .joinedload(Role.permissions)
-        )
-        .where(Employee.id == user_uuid)
-    )
-    employee = db.scalars(query).unique().first()
-
+    employee = _load_employee_with_roles(db, user_uuid)
     if not employee:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Resolve active roles — collect both names and codes
-    roles = []
-    role_codes = []
-    permissions_map = {}
+    roles, role_codes, permissions_map = _build_permissions(employee)
 
-    for er in employee.employee_roles:
-        if er.is_active and er.role:
-            roles.append(er.role.name)
-            role_codes.append(er.role.role_code)
-            for p in er.role.permissions:
-                mod = p.module_name
-                if mod not in permissions_map:
-                    permissions_map[mod] = {
-                        "can_view": False,
-                        "can_create": False,
-                        "can_edit": False,
-                        "can_delete": False,
-                        "can_approve": False,
-                        "can_export": False,
-                    }
-                # Logical OR to aggregate permissions from multiple roles
-                permissions_map[mod]["can_view"] |= p.can_view
-                permissions_map[mod]["can_create"] |= p.can_create
-                permissions_map[mod]["can_edit"] |= p.can_edit
-                permissions_map[mod]["can_delete"] |= p.can_delete
-                permissions_map[mod]["can_approve"] |= p.can_approve
-                permissions_map[mod]["can_export"] |= p.can_export
-
-    # Super-admin bypass: ADMIN or CEO role codes get full access on all modules
-    SUPER_ADMIN_CODES = {"ADMIN", "CEO", "CHIEF_EXECUTIVE_OFFICER", "ADMINISTRATOR"}
+    # Super-admin gets full access on all modules
     if set(role_codes) & SUPER_ADMIN_CODES:
-        for mod in ["HR", "Clients", "Finance", "Projects", "Inventory", "Settings", "Reports", "Timesheets", "Tasks"]:
-            permissions_map[mod] = {
-                "can_view": True,
-                "can_create": True,
-                "can_edit": True,
-                "can_delete": True,
-                "can_approve": True,
-                "can_export": True,
-            }
+        for mod in ["HR", "Clients", "Finance", "Projects",
+                    "Inventory", "Settings", "Reports", "Timesheets", "Tasks"]:
+            permissions_map[mod] = {k: True for k in
+                                    ("can_view", "can_create", "can_edit",
+                                     "can_delete", "can_approve", "can_export")}
 
     permissions_list = [
-        PermissionDetail(
-            module_name=mod,
-            can_view=perms["can_view"],
-            can_create=perms["can_create"],
-            can_edit=perms["can_edit"],
-            can_delete=perms["can_delete"],
-            can_approve=perms["can_approve"],
-            can_export=perms["can_export"],
-        )
+        PermissionDetail(module_name=mod, **perms)
         for mod, perms in permissions_map.items()
     ]
-
-    me_data = UserMeResponse(
-        id=employee.id,
-        employee_code=employee.employee_code,
-        first_name=employee.first_name,
-        last_name=employee.last_name,
-        email=employee.email,
-        username=employee.username,
-        is_active=employee.is_active,
-        roles=roles,
-        permissions=permissions_list,
-    )
 
     return APIResponse(
         success=True,
         message="User profile retrieved successfully",
-        data=me_data.model_dump(),
+        data=UserMeResponse(
+            id=employee.id,
+            employee_code=employee.employee_code,
+            first_name=employee.first_name,
+            last_name=employee.last_name,
+            email=employee.email,
+            username=employee.username,
+            is_active=employee.is_active,
+            roles=roles,
+            permissions=permissions_list,
+        ).model_dump(),
     )

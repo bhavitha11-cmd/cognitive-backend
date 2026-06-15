@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.role import Role
 from app.models.employee_role import EmployeeRole
@@ -21,7 +21,11 @@ class RoleService:
         self.db = db
 
     def get_all(self) -> list[Role]:
-        query = select(Role).order_by(Role.hierarchy_level, Role.name)
+        query = (
+            select(Role)
+            .options(selectinload(Role.permissions))
+            .order_by(Role.hierarchy_level, Role.name)
+        )
         return list(self.db.scalars(query).all())
 
     def get_by_id(self, id: uuid.UUID) -> Role | None:

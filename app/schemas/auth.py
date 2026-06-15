@@ -1,5 +1,5 @@
 import uuid
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Token(BaseModel):
@@ -8,12 +8,13 @@ class Token(BaseModel):
 
 
 class TokenPayload(BaseModel):
-    sub: str | None = None
+    sub: str
+    type: str = "access"
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(..., min_length=1, max_length=100)
+    password: str = Field(..., min_length=1, max_length=128)
 
 
 class PermissionDetail(BaseModel):

@@ -1,39 +1,68 @@
+import re
 import uuid
 from datetime import date, datetime
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from enum import Enum
+
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
+
+
+# ── enums ─────────────────────────────────────────────────────────────────────
+
+class Gender(str, Enum):
+    MALE = "MALE"
+    FEMALE = "FEMALE"
+    OTHER = "OTHER"
+    PREFER_NOT_TO_SAY = "PREFER_NOT_TO_SAY"
+
+
+class EmploymentType(str, Enum):
+    FULL_TIME = "FULL_TIME"
+    PART_TIME = "PART_TIME"
+    CONTRACT = "CONTRACT"
+    INTERN = "INTERN"
+
 
 VALID_STATUSES = {
     "ACTIVE", "PROBATION", "NOTICE_PERIOD",
     "ON_LEAVE", "SUSPENDED", "RESIGNED", "TERMINATED",
 }
-
-
 INITIAL_VALID_STATUSES = {"ACTIVE", "PROBATION"}
 
+
+def _validate_phone(v: str | None) -> str | None:
+    if v is None:
+        return v
+    clean = re.sub(r"[\s\-]", "", v)
+    if not re.match(r"^\+?[\d]{7,15}$", clean):
+        raise ValueError("Invalid phone number format")
+    return v
+
+
+# ── request schemas ───────────────────────────────────────────────────────────
 
 class EmployeeCreate(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=100)
     middle_name: str | None = Field(None, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
     display_name: str | None = Field(None, max_length=255)
-    official_email: EmailStr | None = Field(None)
-    personal_email: EmailStr | None = Field(None)
+    official_email: EmailStr | None = None
+    personal_email: EmailStr | None = None
     email: EmailStr = Field(...)
     username: str = Field(..., min_length=3, max_length=100)
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=128)
     phone: str | None = Field(None, max_length=20)
     mobile_number: str | None = Field(None, max_length=20)
     alternate_phone: str | None = Field(None, max_length=20)
-    gender: str | None = Field(None, max_length=10)
-    date_of_birth: str | None = None
+    gender: Gender | None = None
+    date_of_birth: date | None = None
     profile_photo_url: str | None = None
     department_id: uuid.UUID | None = None
     designation_id: uuid.UUID | None = None
-    role_ids: list[str] = []
+    role_ids: list[uuid.UUID] = []
     reporting_manager_id: uuid.UUID | None = None
-    date_of_joining: str | None = None
-    employment_type: str | None = Field(None, max_length=20)
-    account_status: str = "ACTIVE"
+    date_of_joining: date | None = None
+    employment_type: EmploymentType | None = None
+    account_status: str = Field(default="ACTIVE")
     emergency_contact_name: str | None = Field(None, max_length=200)
     emergency_contact_phone: str | None = Field(None, max_length=20)
     address: str | None = None
@@ -41,11 +70,39 @@ class EmployeeCreate(BaseModel):
     team_id: uuid.UUID | None = None
     is_team_lead: bool = False
 
+    @field_validator("password")
     @classmethod
-    def validate_status(cls, v: str) -> str:
-        if v.upper() not in VALID_STATUSES:
-            raise ValueError(f"Invalid status: {v}. Must be one of {VALID_STATUSES}")
-        return v.upper()
+    def validate_password_complexity(cls, v: str) -> str:
+        import re
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one digit")
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError("Password must contain at least one special character")
+        return v
+
+    @field_validator("account_status")
+    @classmethod
+    def validate_account_status(cls, v: str) -> str:
+        upper = v.upper()
+        if upper not in INITIAL_VALID_STATUSES:
+            raise ValueError(f"New employee status must be one of {INITIAL_VALID_STATUSES}")
+        return upper
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def validate_dob(cls, v: date | None) -> date | None:
+        if v and v >= date.today():
+            raise ValueError("Date of birth must be in the past")
+        return v
+
+    @field_validator("phone", "mobile_number", "alternate_phone", mode="before")
+    @classmethod
+    def validate_phones(cls, v):
+        return _validate_phone(v)
 
 
 class EmployeeUpdate(BaseModel):
@@ -53,23 +110,23 @@ class EmployeeUpdate(BaseModel):
     middle_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, min_length=1, max_length=100)
     display_name: str | None = Field(None, max_length=255)
-    official_email: EmailStr | None = Field(None)
-    personal_email: EmailStr | None = Field(None)
-    email: EmailStr | None = Field(None)
+    official_email: EmailStr | None = None
+    personal_email: EmailStr | None = None
+    email: EmailStr | None = None
     username: str | None = Field(None, min_length=3, max_length=100)
-    password: str | None = Field(None, min_length=8)
+    password: str | None = Field(None, min_length=8, max_length=128)
     phone: str | None = Field(None, max_length=20)
     mobile_number: str | None = Field(None, max_length=20)
     alternate_phone: str | None = Field(None, max_length=20)
-    gender: str | None = Field(None, max_length=10)
-    date_of_birth: str | None = None
+    gender: Gender | None = None
+    date_of_birth: date | None = None
     profile_photo_url: str | None = None
     department_id: uuid.UUID | None = None
     designation_id: uuid.UUID | None = None
-    role_ids: list[str] | None = None
+    role_ids: list[uuid.UUID] | None = None
     reporting_manager_id: uuid.UUID | None = None
-    date_of_joining: str | None = None
-    employment_type: str | None = Field(None, max_length=20)
+    date_of_joining: date | None = None
+    employment_type: EmploymentType | None = None
     account_status: str | None = None
     emergency_contact_name: str | None = Field(None, max_length=200)
     emergency_contact_phone: str | None = Field(None, max_length=20)
@@ -78,6 +135,23 @@ class EmployeeUpdate(BaseModel):
     team_id: uuid.UUID | None = None
     is_team_lead: bool | None = None
 
+    @field_validator("account_status")
+    @classmethod
+    def validate_account_status(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        upper = v.upper()
+        if upper not in VALID_STATUSES:
+            raise ValueError(f"Invalid status '{v}'. Must be one of {VALID_STATUSES}")
+        return upper
+
+    @field_validator("phone", "mobile_number", "alternate_phone", mode="before")
+    @classmethod
+    def validate_phones(cls, v):
+        return _validate_phone(v)
+
+
+# ── response schemas ──────────────────────────────────────────────────────────
 
 class EmployeeResponse(BaseModel):
     id: uuid.UUID
@@ -122,6 +196,7 @@ class EmployeeListResponse(EmployeeResponse):
     department_name: str | None = None
     designation_name: str | None = None
     reporting_manager_name: str | None = None
+    is_team_lead: bool = False
 
 
 class EmployeeOffboardBlocker(BaseModel):
@@ -158,7 +233,7 @@ class EmployeeRoleHistoryResponse(BaseModel):
     employee_id: uuid.UUID
     old_role_id: uuid.UUID | None = None
     old_role_name: str | None = None
-    new_role_id: uuid.UUID
+    new_role_id: uuid.UUID | None = None
     new_role_name: str | None = None
     effective_from: date
     effective_to: date | None = None

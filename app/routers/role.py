@@ -1,15 +1,14 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.models.role import Role
 from app.models.role_permission import RolePermission
-from app.schemas.role import RoleCreate, RoleUpdate, RoleResponse, RolePermissionItem, RolePermissionResponse
+from app.schemas.role import RoleCreate, RoleUpdate, RoleResponse, RolePermissionItem, RolePermissionList, RolePermissionResponse
 from app.schemas.common import APIResponse
 from app.services.role_service import RoleService
-
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_permission
 
 router = APIRouter(
     prefix="/roles",
@@ -23,16 +22,28 @@ def _get_service(db: Session = Depends(get_db)) -> RoleService:
 
 
 @router.get("", response_model=APIResponse)
-def get_roles(service: RoleService = Depends(_get_service)):
+def get_roles(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    service: RoleService = Depends(_get_service),
+):
     roles = service.get_all()
+    total = len(roles)
+    paginated = roles[skip: skip + limit]
     return APIResponse(
         success=True,
         message="Roles retrieved successfully",
-        data={"roles": [RoleResponse.model_validate(r).model_dump() for r in roles]},
+        data={
+            "roles": [RoleResponse.model_validate(r).model_dump() for r in paginated],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+        },
     )
 
 
-@router.post("", response_model=APIResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=APIResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("Settings", "create"))])
 def create_role(role_in: RoleCreate, service: RoleService = Depends(_get_service)):
     try:
         role = service.create(role_in)
@@ -45,14 +56,14 @@ def create_role(role_in: RoleCreate, service: RoleService = Depends(_get_service
     )
 
 
-@router.put("/{id}", response_model=APIResponse)
+@router.put("/{id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Settings", "edit"))])
 def update_role(id: uuid.UUID, role_in: RoleUpdate, service: RoleService = Depends(_get_service)):
     try:
         role = service.update(id, role_in)
     except ValueError as e:
-        if "not found" in str(e):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(e))
     return APIResponse(
         success=True,
         message="Role updated successfully",
@@ -60,71 +71,75 @@ def update_role(id: uuid.UUID, role_in: RoleUpdate, service: RoleService = Depen
     )
 
 
-@router.delete("/{id}", response_model=APIResponse)
+@router.delete("/{id}", response_model=APIResponse,
+               dependencies=[Depends(require_permission("Settings", "delete"))])
 def delete_role(id: uuid.UUID, service: RoleService = Depends(_get_service)):
     try:
         service.delete(id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    return APIResponse(success=True, message="Role deleted successfully", data=None)
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(e))
+    return APIResponse(success=True, message="Role deleted successfully")
 
 
-# ---- Permissions ----
-
+# ── Permissions ───────────────────────────────────────────────────────────────
 
 @router.get("/{id}/permissions", response_model=APIResponse)
 def get_role_permissions(id: uuid.UUID, db: Session = Depends(get_db)):
     role = db.get(Role, id)
     if not role:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
-    permissions = role.permissions
     return APIResponse(
         success=True,
         message="Permissions retrieved",
         data={"permissions": [
-            RolePermissionResponse(
-                id=p.id,
-                role_id=p.role_id,
-                module_name=p.module_name,
-                can_view=p.can_view,
-                can_create=p.can_create,
-                can_edit=p.can_edit,
-                can_delete=p.can_delete,
-                can_approve=p.can_approve,
-                can_export=p.can_export,
-            ).model_dump()
-            for p in permissions
+            RolePermissionResponse.model_validate(p).model_dump()
+            for p in role.permissions
         ]},
     )
 
 
-@router.put("/{id}/permissions", response_model=APIResponse)
+@router.put("/{id}/permissions", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Settings", "edit"))])
 def set_role_permissions(
     id: uuid.UUID,
-    permissions: list[RolePermissionItem],
+    body: RolePermissionList,
     db: Session = Depends(get_db),
 ):
     role = db.get(Role, id)
     if not role:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
-    # Remove existing
-    for p in role.permissions:
-        db.delete(p)
+    # Build a lookup of existing permissions by module_name
+    existing = {p.module_name: p for p in role.permissions}
 
-    # Add new
-    for perm in permissions:
-        rp = RolePermission(
-            role_id=id,
-            module_name=perm.module_name,
-            can_view=perm.can_view,
-            can_create=perm.can_create,
-            can_edit=perm.can_edit,
-            can_delete=perm.can_delete,
-            can_approve=perm.can_approve,
-            can_export=perm.can_export,
-        )
-        db.add(rp)
+    for perm in body.permissions:
+        if perm.module_name in existing:
+            entry = existing[perm.module_name]
+            entry.can_view = perm.can_view
+            entry.can_create = perm.can_create
+            entry.can_edit = perm.can_edit
+            entry.can_delete = perm.can_delete
+            entry.can_approve = perm.can_approve
+            entry.can_export = perm.can_export
+        else:
+            db.add(RolePermission(
+                role_id=id,
+                module_name=perm.module_name,
+                can_view=perm.can_view,
+                can_create=perm.can_create,
+                can_edit=perm.can_edit,
+                can_delete=perm.can_delete,
+                can_approve=perm.can_approve,
+                can_export=perm.can_export,
+            ))
+
+    # Remove any existing permissions not in the incoming list
+    incoming_modules = {p.module_name for p in body.permissions}
+    for mod, entry in existing.items():
+        if mod not in incoming_modules:
+            db.delete(entry)
 
     db.commit()
+
     return APIResponse(success=True, message="Permissions updated successfully")

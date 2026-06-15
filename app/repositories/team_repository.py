@@ -1,9 +1,10 @@
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.models.team import Team
+from app.models.team_member import TeamMember
 from app.repositories.base import BaseRepository
 
 
@@ -12,7 +13,10 @@ class TeamRepository(BaseRepository):
         return list(
             self.db.scalars(
                 select(Team)
-                .options(joinedload(Team.department), joinedload(Team.members))
+                .options(
+                    joinedload(Team.department),
+                    selectinload(Team.members).selectinload(TeamMember.employee),
+                )
                 .order_by(Team.team_name)
             ).unique().all()
         )
@@ -20,7 +24,10 @@ class TeamRepository(BaseRepository):
     def get_by_id(self, id: UUID) -> Team | None:
         return self.db.scalars(
             select(Team)
-            .options(joinedload(Team.department), joinedload(Team.members))
+            .options(
+                joinedload(Team.department),
+                selectinload(Team.members).selectinload(TeamMember.employee),
+            )
             .where(Team.id == id)
         ).unique().first()
 

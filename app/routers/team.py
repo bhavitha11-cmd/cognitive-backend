@@ -1,14 +1,13 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.schemas.common import APIResponse
 from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse
-from app.schemas.team_member import TeamMemberCreate, TeamMemberUpdate, TeamMemberResponse
+from app.schemas.team_member import TeamMemberCreate, TeamMemberUpdate
 from app.services.team_service import TeamService
-
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_permission
 
 router = APIRouter(
     prefix="/teams",
@@ -17,21 +16,33 @@ router = APIRouter(
 )
 
 
-def _get_service(db: Session = Depends(get_db)) -> TeamService:
-    return TeamService(db)
+def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(get_current_user)) -> TeamService:
+    from uuid import UUID
+    try:
+        uid = UUID(current_user_id)
+    except ValueError:
+        uid = None
+    return TeamService(db, current_user_id=uid)
 
 
 @router.get("", response_model=APIResponse)
-def list_teams(service: TeamService = Depends(_get_service)):
+def list_teams(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    service: TeamService = Depends(_get_service),
+):
     teams = service.get_all()
+    total = len(teams)
+    paginated = teams[skip: skip + limit]
     return APIResponse(
         success=True,
         message="Teams retrieved successfully",
-        data={"teams": [t.model_dump() for t in teams]},
+        data={"teams": [t.model_dump() for t in paginated], "total": total, "skip": skip, "limit": limit},
     )
 
 
-@router.post("", response_model=APIResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=APIResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("HR", "create"))])
 def create_team(data: TeamCreate, service: TeamService = Depends(_get_service)):
     try:
         team = service.create(data)
@@ -56,12 +67,14 @@ def get_team(id: uuid.UUID, service: TeamService = Depends(_get_service)):
     )
 
 
-@router.put("/{id}", response_model=APIResponse)
+@router.put("/{id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("HR", "edit"))])
 def update_team(id: uuid.UUID, data: TeamUpdate, service: TeamService = Depends(_get_service)):
     try:
         team = service.update(id, data)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(e))
     return APIResponse(
         success=True,
         message="Team updated successfully",
@@ -69,23 +82,27 @@ def update_team(id: uuid.UUID, data: TeamUpdate, service: TeamService = Depends(
     )
 
 
-@router.delete("/{id}", response_model=APIResponse)
+@router.delete("/{id}", response_model=APIResponse,
+               dependencies=[Depends(require_permission("HR", "delete"))])
 def deactivate_team(id: uuid.UUID, service: TeamService = Depends(_get_service)):
     try:
         service.deactivate(id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(e))
     return APIResponse(success=True, message="Team deactivated successfully")
 
 
-# ---- Team Members ----
+# ── Team Members ───────────────────────────────────────────────────────────────
 
-@router.post("/{team_id}/members", response_model=APIResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{team_id}/members", response_model=APIResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("HR", "edit"))])
 def add_team_member(team_id: uuid.UUID, data: TeamMemberCreate, service: TeamService = Depends(_get_service)):
     try:
         member = service.add_member(team_id, data)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(e))
     return APIResponse(
         success=True,
         message="Member added to team",
@@ -93,15 +110,19 @@ def add_team_member(team_id: uuid.UUID, data: TeamMemberCreate, service: TeamSer
     )
 
 
-@router.put("/{team_id}/members/{member_id}", response_model=APIResponse)
+@router.put("/{team_id}/members/{member_id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("HR", "edit"))])
 def update_team_member(
-    team_id: uuid.UUID, member_id: uuid.UUID,
-    data: TeamMemberUpdate, service: TeamService = Depends(_get_service),
+    team_id: uuid.UUID,
+    member_id: uuid.UUID,
+    data: TeamMemberUpdate,
+    service: TeamService = Depends(_get_service),
 ):
     try:
-        member = service.update_member(member_id, data)
+        member = service.update_member(team_id, member_id, data)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(e))
     return APIResponse(
         success=True,
         message="Team member updated",
@@ -109,13 +130,16 @@ def update_team_member(
     )
 
 
-@router.delete("/{team_id}/members/{member_id}", response_model=APIResponse)
+@router.delete("/{team_id}/members/{member_id}", response_model=APIResponse,
+               dependencies=[Depends(require_permission("HR", "edit"))])
 def remove_team_member(
-    team_id: uuid.UUID, member_id: uuid.UUID,
+    team_id: uuid.UUID,
+    member_id: uuid.UUID,
     service: TeamService = Depends(_get_service),
 ):
     try:
-        service.remove_member(member_id)
+        service.remove_member(team_id, member_id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(e))
     return APIResponse(success=True, message="Member removed from team")

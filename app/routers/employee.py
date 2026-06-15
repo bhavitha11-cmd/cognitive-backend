@@ -13,7 +13,7 @@ from app.schemas.employee import (
     TransferDepartmentRequest,
 )
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_permission
 
 router = APIRouter(
     prefix="/employees",
@@ -26,12 +26,21 @@ class BulkIdsRequest(BaseModel):
     ids: list[str]
 
 
-def _get_service(db: Session = Depends(get_db)):
+def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(get_current_user)):
     from app.services.employee_service import EmployeeService
-    return EmployeeService(db)
+    from uuid import UUID
+    try:
+        uid = UUID(current_user_id)
+    except ValueError:
+        uid = None
+    return EmployeeService(db, current_user_id=uid)
 
 
-@router.get("", response_model=APIResponse)
+@router.get(
+    "",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("HR", "view"))],
+)
 def list_employees(
     search: str | None = Query(None, description="Search by name or email"),
     skip: int = Query(0, ge=0, description="Records to skip"),
@@ -66,7 +75,8 @@ def list_employees(
     )
 
 
-@router.post("", response_model=APIResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=APIResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_permission("HR", "create"))])
 def create_employee(employee_in: EmployeeCreate, service=Depends(_get_service)):
     try:
         employee = service.create(employee_in)
@@ -79,7 +89,11 @@ def create_employee(employee_in: EmployeeCreate, service=Depends(_get_service)):
     )
 
 
-@router.get("/{id}", response_model=APIResponse)
+@router.get(
+    "/{id}",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("HR", "view"))],
+)
 def get_employee(id: str, service=Depends(_get_service)):
     try:
         resolved = service._resolve_id(id)
@@ -93,7 +107,8 @@ def get_employee(id: str, service=Depends(_get_service)):
     )
 
 
-@router.put("/{id}", response_model=APIResponse)
+@router.put("/{id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("HR", "edit"))])
 def update_employee(id: str, employee_in: EmployeeUpdate, service=Depends(_get_service)):
     try:
         resolved = service._resolve_id(id)
@@ -109,20 +124,23 @@ def update_employee(id: str, employee_in: EmployeeUpdate, service=Depends(_get_s
     )
 
 
-@router.delete("/{id}", response_model=APIResponse)
+@router.delete("/{id}", response_model=APIResponse,
+               dependencies=[Depends(require_permission("HR", "delete"))])
 def delete_employee(id: str, service=Depends(_get_service)):
     try:
         resolved = service._resolve_id(id)
         service.delete(resolved)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=str(e))
     return APIResponse(success=True, message="Employee deleted successfully", data=None)
 
 
 # ---- Offboarding Workflow ----
 
 
-@router.post("/{id}/offboard/check", response_model=APIResponse)
+@router.post("/{id}/offboard/check", response_model=APIResponse,
+             dependencies=[Depends(require_permission("HR", "edit"))])
 def offboard_check(id: str, service=Depends(_get_service)):
     try:
         resolved = service._resolve_id(id)
@@ -136,10 +154,11 @@ def offboard_check(id: str, service=Depends(_get_service)):
     )
 
 
-@router.post("/{id}/offboard/confirm", response_model=APIResponse)
+@router.post("/{id}/offboard/confirm", response_model=APIResponse,
+             dependencies=[Depends(require_permission("HR", "delete"))])
 def offboard_confirm(
     id: str,
-    final_status: str = Query("RESIGNED", description="Final status: RESIGNED or TERMINATED"),
+    final_status: str = Query("RESIGNED", description="Final status", enum=["RESIGNED", "TERMINATED"]),
     service=Depends(_get_service),
 ):
     try:
@@ -154,7 +173,8 @@ def offboard_confirm(
     )
 
 
-@router.post("/{id}/transfer-reports", response_model=APIResponse)
+@router.post("/{id}/transfer-reports", response_model=APIResponse,
+             dependencies=[Depends(require_permission("HR", "edit"))])
 def transfer_reports(
     id: str,
     body: TransferReportsRequest,
@@ -172,7 +192,8 @@ def transfer_reports(
     )
 
 
-@router.post("/{id}/transfer-teams", response_model=APIResponse)
+@router.post("/{id}/transfer-teams", response_model=APIResponse,
+             dependencies=[Depends(require_permission("HR", "edit"))])
 def transfer_teams(
     id: str,
     body: TransferTeamRequest,
@@ -189,7 +210,8 @@ def transfer_teams(
     )
 
 
-@router.post("/{id}/transfer-departments", response_model=APIResponse)
+@router.post("/{id}/transfer-departments", response_model=APIResponse,
+             dependencies=[Depends(require_permission("HR", "edit"))])
 def transfer_departments(
     id: str,
     body: TransferDepartmentRequest,
@@ -209,7 +231,11 @@ def transfer_departments(
 # ---- History Endpoints ----
 
 
-@router.get("/{id}/role-history", response_model=APIResponse)
+@router.get(
+    "/{id}/role-history",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("HR", "view"))],
+)
 def get_role_history(id: str, service=Depends(_get_service)):
     resolved = service._resolve_id(id)
     history = service.get_role_history(resolved)
@@ -220,7 +246,11 @@ def get_role_history(id: str, service=Depends(_get_service)):
     )
 
 
-@router.get("/{id}/reporting-history", response_model=APIResponse)
+@router.get(
+    "/{id}/reporting-history",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("HR", "view"))],
+)
 def get_reporting_history(id: str, service=Depends(_get_service)):
     resolved = service._resolve_id(id)
     history = service.get_reporting_history(resolved)
@@ -231,7 +261,11 @@ def get_reporting_history(id: str, service=Depends(_get_service)):
     )
 
 
-@router.get("/{id}/direct-reports", response_model=APIResponse)
+@router.get(
+    "/{id}/direct-reports",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("HR", "view"))],
+)
 def get_direct_reports(id: str, service=Depends(_get_service)):
     from app.services.employee_service import EmployeeService
     resolved = service._resolve_id(id)
@@ -250,7 +284,8 @@ def get_direct_reports(id: str, service=Depends(_get_service)):
 # ---- Deprecated endpoints ----
 
 
-@router.patch("/{id}/deactivate", response_model=APIResponse)
+@router.patch("/{id}/deactivate", response_model=APIResponse,
+              dependencies=[Depends(require_permission("HR", "delete"))])
 def deactivate_employee(id: str, service=Depends(_get_service)):
     try:
         resolved = service._resolve_id(id)
@@ -266,7 +301,8 @@ def deactivate_employee(id: str, service=Depends(_get_service)):
     )
 
 
-@router.post("/bulk-deactivate", response_model=APIResponse)
+@router.post("/bulk-deactivate", response_model=APIResponse,
+             dependencies=[Depends(require_permission("HR", "delete"))])
 def bulk_deactivate_employees(body: BulkIdsRequest, service=Depends(_get_service)):
     try:
         service.bulk_deactivate(body.ids)
@@ -275,7 +311,8 @@ def bulk_deactivate_employees(body: BulkIdsRequest, service=Depends(_get_service
     return APIResponse(success=True, message="Deprecated endpoint", data=None)
 
 
-@router.post("/bulk-delete", response_model=APIResponse)
+@router.post("/bulk-delete", response_model=APIResponse,
+             dependencies=[Depends(require_permission("HR", "delete"))])
 def bulk_delete_employees(body: BulkIdsRequest, service=Depends(_get_service)):
     try:
         service.bulk_delete(body.ids)
