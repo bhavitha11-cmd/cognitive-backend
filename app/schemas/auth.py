@@ -29,6 +29,7 @@ class PermissionDetail(BaseModel):
 
 class UserMeResponse(BaseModel):
     id: uuid.UUID
+    employee_id: uuid.UUID | None = None  # alias for id, explicit for frontend
     employee_code: str
     first_name: str
     last_name: str
@@ -36,4 +37,7 @@ class UserMeResponse(BaseModel):
     username: str
     is_active: bool
     roles: list[str]
+    role_codes: list[str] = []
+    data_access_level: str = "SELF"
     permissions: list[PermissionDetail]
+

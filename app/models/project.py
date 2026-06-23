@@ -38,6 +38,9 @@ class Project(Base):
         String(50), unique=True, nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(500), nullable=False)
+    part_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="", server_default=""
+    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     client_id: Mapped[uuid.UUID] = mapped_column(
@@ -52,9 +55,9 @@ class Project(Base):
     )
 
     # Status / classification
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="Yet To Start")
+    status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     priority: Mapped[str] = mapped_column(String(20), nullable=False, default="MEDIUM")
-    billing_type: Mapped[str] = mapped_column(String(30), nullable=False, default="FIXED")
     is_billable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Dates
@@ -66,6 +69,14 @@ class Project(Base):
     # Hours / billing
     estimated_hours: Mapped[float] = mapped_column(
         Numeric(10, 2), nullable=False, default=0
+    )
+    # Auto-computed from tasks — do NOT set manually
+    actual_hours: Mapped[float] = mapped_column(
+        Numeric(10, 2), nullable=False, default=0
+    )
+    # Hour-weighted progress 0.00–100.00 — auto-computed from tasks
+    progress: Mapped[float] = mapped_column(
+        Numeric(5, 2), nullable=False, default=0
     )
     contract_hours: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
 

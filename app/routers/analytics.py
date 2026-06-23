@@ -1,3 +1,4 @@
+import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -72,6 +73,35 @@ def client_performance(service: AnalyticsService = Depends(_get_service)):
 def scope_distribution(service: AnalyticsService = Depends(_get_service)):
     result = service.get_scope_distribution()
     return APIResponse(success=True, message="Scope distribution retrieved", data=result.model_dump())
+
+
+@router.get("/session-analytics", response_model=APIResponse)
+def session_analytics(
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
+    employee_id: uuid.UUID | None = Query(default=None),
+    service: AnalyticsService = Depends(_get_service),
+):
+    result = service.get_session_analytics(
+        from_date=from_date, to_date=to_date, employee_id=employee_id
+    )
+    return APIResponse(
+        success=True,
+        message="Session analytics retrieved",
+        data=result.model_dump(),
+    )
+
+
+@router.get("/rework-analytics", response_model=APIResponse)
+def rework_analytics(
+    service: AnalyticsService = Depends(_get_service),
+):
+    result = service.get_rework_analytics()
+    return APIResponse(
+        success=True,
+        message="Rework analytics retrieved",
+        data=result.model_dump(),
+    )
 
 
 @router.get("/calendar-events", response_model=APIResponse)

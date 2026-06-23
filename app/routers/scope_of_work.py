@@ -26,7 +26,7 @@ def _get_service(
     try:
         uid = _UUID(current_user_id)
     except (ValueError, AttributeError):
-        uid = None
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user identity")
     return ScopeService(db, current_user_id=uid)
 
 

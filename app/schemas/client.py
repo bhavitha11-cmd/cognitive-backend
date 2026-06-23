@@ -5,14 +5,15 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class ClientCreate(BaseModel):
-    client_code: str = Field("", min_length=0, max_length=20)
+    client_code: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=200)
     industry: str | None = None
-    contact_person: str | None = None
-    contact_email: EmailStr | None = None
-    contact_phone: str | None = Field(None, max_length=50)
-    country: str | None = None
-    address: str | None = None
+    contact_person: str = Field(..., min_length=1, max_length=200)
+    contact_email: EmailStr = Field(...)
+    contact_phone: str = Field(..., min_length=1, max_length=50)
+    alternate_phone: str | None = Field(None, max_length=50)
+    country: str = Field(..., min_length=1, max_length=100)
+    address: str = Field(..., min_length=1)
     notes: str | None = None
 
 
@@ -20,13 +21,16 @@ class ClientUpdate(BaseModel):
     client_code: str | None = Field(None, min_length=1, max_length=20)
     name: str | None = Field(None, min_length=1, max_length=200)
     industry: str | None = None
-    contact_person: str | None = None
+    contact_person: str | None = Field(None, min_length=1, max_length=200)
     contact_email: EmailStr | None = None
-    contact_phone: str | None = Field(None, max_length=50)
-    country: str | None = None
-    address: str | None = None
+    contact_phone: str | None = Field(None, min_length=1, max_length=50)
+    alternate_phone: str | None = Field(None, max_length=50)
+    country: str | None = Field(None, min_length=1, max_length=100)
+    address: str | None = Field(None, min_length=1)
     notes: str | None = None
     is_active: bool | None = None
+    status: str | None = Field(None, max_length=20)
+    deactivation_reason: str | None = None
 
 
 class ClientResponse(BaseModel):
@@ -37,10 +41,15 @@ class ClientResponse(BaseModel):
     contact_person: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
+    alternate_phone: str | None = None
     country: str | None = None
     address: str | None = None
     notes: str | None = None
     is_active: bool
+    status: str
+    deactivation_reason: str | None = None
+    deactivated_at: datetime | None = None
+    deactivated_by: str | None = None
     project_count: int = 0
     created_at: datetime | None = None
 

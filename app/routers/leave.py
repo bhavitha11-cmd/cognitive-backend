@@ -30,7 +30,7 @@ def _get_service(
     try:
         uid = uuid.UUID(current_user_id)
     except (ValueError, AttributeError):
-        uid = None
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user identity")
     return LeaveService(db, current_user_id=uid)
 
 
@@ -322,11 +322,7 @@ def update_leave_request(
     )
 
 
-@router.post(
-    "/requests/{id}/cancel",
-    response_model=APIResponse,
-    dependencies=[Depends(require_permission("Leave", "edit"))],
-)
+@router.post("/requests/{id}/cancel", response_model=APIResponse)
 def cancel_leave_request(
     id: uuid.UUID,
     service: LeaveService = Depends(_get_service),

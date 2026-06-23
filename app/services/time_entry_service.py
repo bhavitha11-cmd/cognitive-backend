@@ -23,6 +23,79 @@ class TimeEntryService:
         self.db = db
         self.current_user_id = current_user_id
 
+    # ── Batch create ────────────────────────────────────────────────────────────
+
+    def create_batch(self, entries: list[TimeEntryCreate]) -> list[TimeEntryResponse]:
+        if not self.current_user_id:
+            raise ValueError("Current user is not set")
+
+        seen_keys: set[tuple[uuid.UUID, uuid.UUID, date]] = set()
+        results: list[TimeEntryResponse] = []
+        for data in entries:
+            employee_id = data.employee_id if data.employee_id else self.current_user_id
+            if employee_id != self.current_user_id:
+                raise ValueError("You can only create time entries for yourself")
+
+            key = (employee_id, data.task_id, data.date)
+            if key in seen_keys:
+                raise ValueError(f"Duplicate entry in batch for task {data.task_id} on {data.date}")
+            seen_keys.add(key)
+
+            duplicate_exists = self.db.scalar(
+                select(func.count()).select_from(TimeEntry).where(
+                    TimeEntry.employee_id == employee_id,
+                    TimeEntry.task_id == data.task_id,
+                    TimeEntry.date == data.date,
+                )
+            ) or 0
+            if duplicate_exists > 0:
+                raise ValueError("Time entry already exists for this task and date")
+
+            employee = self.db.get(Employee, employee_id)
+            if not employee:
+                raise ValueError("Referenced employee not found")
+
+            task = self.db.get(Task, data.task_id)
+            if not task:
+                raise ValueError("Referenced task not found")
+            if not task.is_active:
+                raise ValueError("Cannot log time against an inactive task")
+
+            project_id = task.project_id
+            project = self.db.get(Project, project_id)
+            if not project:
+                raise ValueError("Referenced project not found")
+
+            entry = TimeEntry(
+                employee_id=employee_id,
+                task_id=data.task_id,
+                project_id=project_id,
+                date=data.date,
+                hours_spent=data.hours_spent,
+                description=data.description,
+                entry_type=data.entry_type,
+                is_billable=data.is_billable,
+                status="DRAFT",
+            )
+            self.db.add(entry)
+            self.db.flush()
+
+            results.append(self._build_response(entry))
+
+        self.db.commit()
+
+        touched_task_ids = {e.task_id for e in entries}
+        for tid in touched_task_ids:
+            self._recompute_task_actual_hours(tid)
+
+        AuditService.log(
+            self.db, "time_entry", None, "BATCH_CREATE",
+            performed_by=self.current_user_id,
+            new_value={"count": len(entries), "task_ids": [str(t) for t in touched_task_ids]},
+        )
+
+        return results
+
     # ── Read ───────────────────────────────────────────────────────────────────
 
     def get_all(
@@ -64,7 +137,7 @@ class TimeEntryService:
     def get_by_id(self, id: UUID) -> TimeEntryResponse:
         entry = self._fetch_entry(id)
         if not entry:
-            raise ValueError(f"Time entry with id {id} not found")
+            raise ValueError("Time entry not found")
         return self._build_response(entry)
 
     # ── Create ─────────────────────────────────────────────────────────────────
@@ -144,7 +217,7 @@ class TimeEntryService:
     def update(self, id: UUID, data: TimeEntryUpdate) -> TimeEntryResponse:
         entry = self._fetch_entry(id)
         if not entry:
-            raise ValueError(f"Time entry with id {id} not found")
+            raise ValueError("Time entry not found")
 
         if entry.status != "DRAFT":
             raise ValueError(
@@ -183,7 +256,7 @@ class TimeEntryService:
     def delete(self, id: UUID) -> None:
         entry = self._fetch_entry(id)
         if not entry:
-            raise ValueError(f"Time entry with id {id} not found")
+            raise ValueError("Time entry not found")
 
         # Ownership check
         if entry.employee_id != self.current_user_id:
@@ -218,7 +291,7 @@ class TimeEntryService:
     def submit(self, id: UUID) -> TimeEntryResponse:
         entry = self._fetch_entry(id)
         if not entry:
-            raise ValueError(f"Time entry with id {id} not found")
+            raise ValueError("Time entry not found")
 
         # Ownership check
         if entry.employee_id != self.current_user_id:
@@ -247,7 +320,7 @@ class TimeEntryService:
     def approve(self, id: UUID, approved_by_id: UUID) -> TimeEntryResponse:
         entry = self._fetch_entry(id)
         if not entry:
-            raise ValueError(f"Time entry with id {id} not found")
+            raise ValueError("Time entry not found")
 
         if entry.status != "SUBMITTED":
             raise ValueError(
@@ -281,7 +354,7 @@ class TimeEntryService:
     def reject(self, id: UUID, reason: str, rejected_by_id: UUID) -> TimeEntryResponse:
         entry = self._fetch_entry(id)
         if not entry:
-            raise ValueError(f"Time entry with id {id} not found")
+            raise ValueError("Time entry not found")
 
         if entry.status not in ("SUBMITTED", "APPROVED"):
             raise ValueError(
@@ -387,7 +460,7 @@ class TimeEntryService:
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _recompute_task_actual_hours(self, task_id: UUID) -> None:
-        """Recompute task.actual_hours as sum of non-REJECTED time entries."""
+        """Recompute task.actual_hours from non-REJECTED time entries, then cascade to project metrics."""
         total = self.db.scalar(
             select(func.sum(TimeEntry.hours_spent)).where(
                 TimeEntry.task_id == task_id,
@@ -399,6 +472,19 @@ class TimeEntryService:
         if task:
             task.actual_hours = float(total)
             self.db.commit()
+            self._trigger_project_recalc(task.project_id)
+
+    def _trigger_project_recalc(self, project_id: UUID) -> None:
+        import logging
+        try:
+            from app.services.project_metrics_service import ProjectMetricsService
+            ProjectMetricsService.recalculate(self.db, project_id)
+            self.db.commit()
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "[TimeEntryService] project_metrics recalc failed for project %s",
+                project_id, exc_info=True,
+            )
 
     def _fetch_entry(self, id: UUID) -> TimeEntry | None:
         return self.db.scalars(
@@ -473,3 +559,108 @@ class TimeEntryService:
             rejection_reason=entry.rejection_reason,
             created_at=entry.created_at,
         )
+
+    # ── Batch Weekly Submission/Approval ────────────────────────────────────────
+
+    def submit_week(self, date_from: date, date_to: date) -> int:
+        if not self.current_user_id:
+            raise ValueError("Current user is not set")
+        
+        # Select all DRAFT or REJECTED time entries for this user in this week range
+        entries = self.db.scalars(
+            select(TimeEntry).where(
+                TimeEntry.employee_id == self.current_user_id,
+                TimeEntry.date >= date_from,
+                TimeEntry.date <= date_to,
+                TimeEntry.status.in_(["DRAFT", "REJECTED"])
+            )
+        ).all()
+        
+        now = datetime.now(timezone.utc)
+        count = 0
+        for entry in entries:
+            entry.status = "SUBMITTED"
+            entry.submitted_at = now
+            count += 1
+            
+        if count > 0:
+            self.db.commit()
+            AuditService.log(
+                self.db, "time_entry", None, "BATCH_SUBMIT_WEEK",
+                performed_by=self.current_user_id,
+                new_value={"date_from": str(date_from), "date_to": str(date_to), "count": count}
+            )
+        return count
+
+    def approve_week(self, employee_id: UUID, date_from: date, date_to: date) -> int:
+        if not self.current_user_id:
+            raise ValueError("Current user is not set")
+            
+        # Select all SUBMITTED time entries for the employee in this week range
+        entries = self.db.scalars(
+            select(TimeEntry).where(
+                TimeEntry.employee_id == employee_id,
+                TimeEntry.date >= date_from,
+                TimeEntry.date <= date_to,
+                TimeEntry.status == "SUBMITTED"
+            )
+        ).all()
+        
+        now = datetime.now(timezone.utc)
+        count = 0
+        for entry in entries:
+            entry.status = "APPROVED"
+            entry.approved_by = self.current_user_id
+            entry.approved_at = now
+            entry.rejection_reason = None
+            count += 1
+            
+        if count > 0:
+            self.db.commit()
+            
+            # Recompute hours for all touched tasks
+            task_ids = {entry.task_id for entry in entries}
+            for tid in task_ids:
+                self._recompute_task_actual_hours(tid)
+                
+            AuditService.log(
+                self.db, "time_entry", None, "BATCH_APPROVE_WEEK",
+                performed_by=self.current_user_id,
+                new_value={"employee_id": str(employee_id), "date_from": str(date_from), "date_to": str(date_to), "count": count}
+            )
+        return count
+
+    def reject_week(self, employee_id: UUID, date_from: date, date_to: date, reason: str | None = None) -> int:
+        if not self.current_user_id:
+            raise ValueError("Current user is not set")
+            
+        # Select all SUBMITTED time entries for the employee in this week range
+        entries = self.db.scalars(
+            select(TimeEntry).where(
+                TimeEntry.employee_id == employee_id,
+                TimeEntry.date >= date_from,
+                TimeEntry.date <= date_to,
+                TimeEntry.status == "SUBMITTED"
+            )
+        ).all()
+        
+        count = 0
+        for entry in entries:
+            entry.status = "REJECTED"
+            entry.rejection_reason = reason
+            count += 1
+            
+        if count > 0:
+            self.db.commit()
+            
+            # Recompute hours for all touched tasks
+            task_ids = {entry.task_id for entry in entries}
+            for tid in task_ids:
+                self._recompute_task_actual_hours(tid)
+                
+            AuditService.log(
+                self.db, "time_entry", None, "BATCH_REJECT_WEEK",
+                performed_by=self.current_user_id,
+                new_value={"employee_id": str(employee_id), "date_from": str(date_from), "date_to": str(date_to), "count": count, "reason": reason}
+            )
+        return count

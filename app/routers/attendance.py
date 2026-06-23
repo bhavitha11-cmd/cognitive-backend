@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.dependencies import get_current_user, require_permission
+from app.core.rbac import UserContext, require_data_access, DataAccessLevel
 from app.schemas.attendance import AttendanceMarkRequest, AttendanceBulkMarkRequest, AttendanceRuleUpdate
 from app.schemas.common import APIResponse
 
@@ -29,7 +30,7 @@ def _get_service(
     try:
         uid = uuid.UUID(current_user_id)
     except (ValueError, AttributeError):
-        uid = None
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user identity")
     return AttendanceService(db, current_user_id=uid)
 
 
@@ -118,6 +119,11 @@ def clock_out(
     employee_id = _resolve_employee_id(current_user_id, db)
     try:
         record = service.clock_out(employee_id)
+
+        # Rule 7: Auto-close any running work session on clock-out
+        from app.services.work_session_service import WorkSessionService
+        ws_service = WorkSessionService(db, current_user_id=employee_id)
+        closed_session_id = ws_service.end_current_session_on_clock_out()
     except ValueError as e:
         detail = str(e)
         code = (
@@ -129,7 +135,10 @@ def clock_out(
     return APIResponse(
         success=True,
         message="Clock-out recorded successfully",
-        data={"attendance": record.model_dump()},
+        data={
+            "attendance": record.model_dump(),
+            "auto_closed_session": str(closed_session_id) if closed_session_id else None,
+        },
     )
 
 
@@ -163,7 +172,6 @@ def mark_attendance(
 @router.get(
     "",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Attendance", "view"))],
 )
 def list_attendance(
     employee_id: Optional[uuid.UUID] = Query(None),
@@ -172,12 +180,18 @@ def list_attendance(
     record_date: Optional[date] = Query(None, alias="date"),
     department_id: Optional[uuid.UUID] = Query(None),
     service=Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
 ):
     """
     Flexible list endpoint:
     - ?employee_id=<uuid> [&from_date=YYYY-MM-DD] [&to_date=YYYY-MM-DD]  — records for one employee
     - ?date=YYYY-MM-DD [&department_id=<uuid>]                            — all employees on a date
     """
+    # SELF-level users can only see their own attendance records
+    if user_ctx.data_access_level == DataAccessLevel.SELF:
+        employee_id = user_ctx.employee_id
+        department_id = None  # dept filter irrelevant for self-view
+
     try:
         if employee_id:
             records = service.get_by_employee(employee_id, from_date, to_date)

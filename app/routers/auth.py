@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from jose import JWTError
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select
@@ -153,6 +153,10 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = None
+
+
 @router.post("/token/refresh", response_model=APIResponse)
 @limiter.limit("20/minute")
 def token_refresh(request: Request, body: RefreshRequest, db: Session = Depends(get_db)):
@@ -168,8 +172,15 @@ def token_refresh(request: Request, body: RefreshRequest, db: Session = Depends(
         user_id: str | None = payload.get("sub")
         if not user_id:
             raise credentials_exc
-    except JWTError:
+    except jwt.exceptions.InvalidTokenError:
         raise credentials_exc
+
+    # Reject if this refresh token has already been revoked (e.g. user logged out)
+    jti = payload.get("jti")
+    if jti:
+        from app.models.revoked_token import RevokedToken
+        if db.scalar(select(RevokedToken).where(RevokedToken.jti == jti)):
+            raise credentials_exc
 
     employee = db.get(Employee, UUID(user_id))
     if not employee or not employee.is_active:
@@ -183,31 +194,42 @@ def token_refresh(request: Request, body: RefreshRequest, db: Session = Depends(
     )
 
 
+def _revoke_token_if_valid(token_str: str, db, token_type: str | None = None) -> None:
+    """Decode a JWT and add its JTI to the revoked_tokens table if not already there."""
+    from app.models.revoked_token import RevokedToken
+    from app.core.config import settings as _s
+    try:
+        payload = jwt.decode(token_str, _s.SECRET_KEY, algorithms=[_s.ALGORITHM])
+        if token_type and payload.get("type") != token_type:
+            return
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if jti and exp:
+            already = db.scalar(select(RevokedToken).where(RevokedToken.jti == jti))
+            if not already:
+                db.add(RevokedToken(jti=jti, expires_at=datetime.fromtimestamp(exp, tz=timezone.utc)))
+    except Exception:
+        pass  # already expired / invalid — nothing to revoke
+
+
 @router.post("/logout", response_model=APIResponse)
 def logout(
     request: Request,
+    body: LogoutRequest = None,
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    from app.models.revoked_token import RevokedToken
-    from jose import jwt
-    from app.core.config import settings
-
-    # Extract token from Authorization header
+    # Revoke access token
     auth_header = request.headers.get("Authorization", "")
-    token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
-    if token:
-        try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-            jti = payload.get("jti")
-            exp = payload.get("exp")
-            if jti and exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                revoked = RevokedToken(jti=jti, expires_at=expires_at)
-                db.add(revoked)
-                db.commit()
-        except Exception:
-            pass  # Token already invalid, logout is still successful
+    access_token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+    if access_token:
+        _revoke_token_if_valid(access_token, db, token_type="access")
+
+    # Revoke refresh token — makes logout truly complete even if attacker has the refresh token
+    if body and body.refresh_token:
+        _revoke_token_if_valid(body.refresh_token, db, token_type="refresh")
+
+    db.commit()
     return APIResponse(success=True, message="Logged out successfully", data=None)
 
 
@@ -280,6 +302,10 @@ def get_me(
 
     roles, role_codes, permissions_map = _build_permissions(employee)
 
+    # Resolve RBAC context for data access level
+    from app.core.rbac import get_user_context
+    user_ctx = get_user_context(db, current_user_id)
+
     # Super-admin gets full access on all modules
     if set(role_codes) & SUPER_ADMIN_CODES:
         for mod in ["HR", "Clients", "Finance", "Projects",
@@ -298,6 +324,7 @@ def get_me(
         message="User profile retrieved successfully",
         data=UserMeResponse(
             id=employee.id,
+            employee_id=employee.id,
             employee_code=employee.employee_code,
             first_name=employee.first_name,
             last_name=employee.last_name,
@@ -305,6 +332,9 @@ def get_me(
             username=employee.username,
             is_active=employee.is_active,
             roles=roles,
+            role_codes=role_codes,
+            data_access_level=user_ctx.data_access_level.value,
             permissions=permissions_list,
         ).model_dump(),
     )
+

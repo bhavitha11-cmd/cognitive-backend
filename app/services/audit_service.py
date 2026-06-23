@@ -1,6 +1,6 @@
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.models.audit_log import AuditLog
 from app.middleware.audit_context import get_audit_context
@@ -15,6 +15,7 @@ class AuditService:
     def _make_json_serializable(data):
         import uuid
         from datetime import date, datetime
+        from decimal import Decimal
 
         if data is None:
             return None
@@ -26,6 +27,8 @@ class AuditService:
             return str(data)
         elif isinstance(data, (datetime, date)):
             return data.isoformat()
+        elif isinstance(data, Decimal):
+            return float(data)
         return data
 
     @staticmethod
@@ -55,7 +58,7 @@ class AuditService:
             performed_by=performed_by,
             ip_address=ip_address or ctx_ip,
             user_agent=user_agent or ctx_ua,
-            performed_at=datetime.utcnow(),
+            performed_at=datetime.now(timezone.utc),
         )
         db.add(entry)
         db.commit()

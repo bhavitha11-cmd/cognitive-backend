@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy import select, func, and_, case
 from sqlalchemy.orm import Session
@@ -17,7 +18,12 @@ from app.schemas.analytics import (
     EmployeeUtilization, UtilizationResponse, DepartmentLoad, DepartmentLoadResponse,
     OverdueTask, ClientPerformance, ClientPerformanceResponse,
     ScopeDistribution, ScopeDistributionResponse,
+    SessionAnalytics, SessionAnalyticsResponse,
+    ReworkAnalytics, ReworkAnalyticsResponse,
 )
+from app.models.task_work_session import TaskWorkSession
+from app.models.employee_break import EmployeeBreak
+from app.models.task_rework_history import TaskReworkHistory
 
 
 class AnalyticsService:
@@ -30,8 +36,8 @@ class AnalyticsService:
 
         total_clients = self.db.scalar(select(func.count(Client.id)).where(Client.is_active == True)) or 0
         total_projects = self.db.scalar(select(func.count(Project.id)).where(Project.is_active == True)) or 0
-        active_projects = self.db.scalar(select(func.count(Project.id)).where(Project.is_active == True, Project.status.in_(["ACTIVE", "ON_HOLD"]))) or 0
-        completed_projects = self.db.scalar(select(func.count(Project.id)).where(Project.status == "COMPLETED")) or 0
+        active_projects = self.db.scalar(select(func.count(Project.id)).where(Project.is_active == True, Project.status.in_(["In Progress", "On Hold"]))) or 0
+        completed_projects = self.db.scalar(select(func.count(Project.id)).where(Project.status == "Completed")) or 0
         total_tasks = self.db.scalar(select(func.count(Task.id)).where(Task.is_active == True)) or 0
         pending_tasks = self.db.scalar(select(func.count(Task.id)).where(Task.status == "NOT_STARTED", Task.is_active == True)) or 0
         in_progress_tasks = self.db.scalar(select(func.count(Task.id)).where(Task.status == "IN_PROGRESS", Task.is_active == True)) or 0
@@ -102,7 +108,7 @@ class AnalyticsService:
 
             result.append(PlanVsActualProject(
                 id=p.id,
-                project_code=p.project_code,
+                part_number=p.project_code,
                 name=p.name,
                 client_name=p.client.name if p.client else None,
                 status=p.status,
@@ -294,8 +300,8 @@ class AnalyticsService:
         for c in clients:
             projects = self.db.scalars(select(Project).where(Project.client_id == c.id)).all()
             total = len(projects)
-            active = sum(1 for p in projects if p.status in ("ACTIVE", "ON_HOLD"))
-            completed = sum(1 for p in projects if p.status == "COMPLETED")
+            active = sum(1 for p in projects if p.status in ("In Progress", "On Hold"))
+            completed = sum(1 for p in projects if p.status == "Completed")
             delayed = sum(1 for p in projects if p.actual_end_date and p.planned_end_date and p.actual_end_date > p.planned_end_date)
             est = sum(float(p.estimated_hours or 0) for p in projects)
             act = sum(
@@ -365,6 +371,156 @@ class AnalyticsService:
             ))
 
         return ScopeDistributionResponse(scopes=result)
+
+    def get_session_analytics(
+        self,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        employee_id: UUID | None = None,
+    ) -> SessionAnalyticsResponse:
+        if not to_date:
+            to_date = date.today()
+        if not from_date:
+            from_date = to_date - timedelta(days=30)
+
+        base_filter = [
+            TaskWorkSession.start_time >= datetime.combine(from_date, datetime.min.time()),
+            TaskWorkSession.start_time <= datetime.combine(to_date, datetime.max.time()),
+        ]
+
+        employees_query = select(Employee).where(Employee.is_active == True)
+        if employee_id:
+            employees_query = employees_query.where(Employee.id == employee_id)
+        employees = self.db.scalars(employees_query.order_by(Employee.first_name)).all()
+
+        result = []
+        total_company_session_hours = 0.0
+        total_company_break_hours = 0.0
+
+        for emp in employees:
+            sessions = self.db.scalars(
+                select(TaskWorkSession).where(
+                    TaskWorkSession.employee_id == emp.id,
+                    *base_filter,
+                )
+            ).all()
+
+            breaks = self.db.scalars(
+                select(EmployeeBreak).where(
+                    EmployeeBreak.employee_id == emp.id,
+                    EmployeeBreak.date >= from_date,
+                    EmployeeBreak.date <= to_date,
+                )
+            ).all()
+
+            total_session_min = sum(
+                s.duration_minutes for s in sessions
+                if s.status in ("COMPLETED", "CANCELLED", "ABANDONED")
+            )
+            total_break_min = sum(b.duration_minutes for b in breaks)
+            session_count = len(sessions)
+            avg_duration = round(total_session_min / session_count, 1) if session_count > 0 else 0.0
+
+            session_hours = round(total_session_min / 60.0, 2)
+            break_hours = round(total_break_min / 60.0, 2)
+
+            billable_sessions = [
+                s for s in sessions if s.session_type == "REGULAR"
+                and s.status in ("COMPLETED", "CANCELLED", "ABANDONED")
+            ]
+            billable_min = sum(s.duration_minutes for s in billable_sessions)
+
+            working_days_in_period = (to_date - from_date).days + 1
+            expected_work_min = working_days_in_period * 480  # 8 hours per day
+            idle_min = max(0, expected_work_min - total_session_min)
+
+            total_company_session_hours += session_hours
+            total_company_break_hours += break_hours
+
+            result.append(SessionAnalytics(
+                employee_id=emp.id,
+                employee_name=f"{emp.first_name} {emp.last_name}",
+                total_session_minutes=total_session_min,
+                total_break_minutes=total_break_min,
+                net_work_minutes=max(0, total_session_min - total_break_min),
+                session_count=session_count,
+                avg_session_duration_minutes=avg_duration,
+                billable_session_hours=round(billable_min / 60.0, 2),
+                idle_minutes=idle_min,
+                period_start=from_date,
+                period_end=to_date,
+            ))
+
+        return SessionAnalyticsResponse(
+            employees=result,
+            period_start=from_date,
+            period_end=to_date,
+            total_company_session_hours=round(total_company_session_hours, 2),
+            total_company_break_hours=round(total_company_break_hours, 2),
+        )
+
+    def get_rework_analytics(self) -> ReworkAnalyticsResponse:
+        total_rework_entries = self.db.scalar(
+            select(func.count(TaskReworkHistory.id))
+        ) or 0
+        total_rework_hours = self.db.scalar(
+            select(func.coalesce(func.sum(TaskReworkHistory.hours_spent), 0)).where(
+                TaskReworkHistory.closed_at.isnot(None)
+            )
+        ) or 0
+        open_cycles = self.db.scalar(
+            select(func.count(TaskReworkHistory.id)).where(
+                TaskReworkHistory.closed_at.is_(None)
+            )
+        ) or 0
+
+        total_actual_hours = self.db.scalar(
+            select(func.coalesce(func.sum(Task.actual_hours), 0)).where(
+                Task.is_active == True
+            )
+        ) or 0
+
+        total_rework_hours_f = float(total_rework_hours)
+        total_actual_f = float(total_actual_hours)
+        rework_pct = round(
+            (total_rework_hours_f / total_actual_f * 100)
+            if total_actual_f > 0 else 0, 2
+        )
+        avg_hours = round(
+            total_rework_hours_f / total_rework_entries, 2
+        ) if total_rework_entries > 0 else 0.0
+
+        rework_by_task = self.db.execute(
+            select(
+                Task.id,
+                Task.task_code,
+                Task.title,
+                func.count(TaskReworkHistory.id),
+                func.coalesce(func.sum(TaskReworkHistory.hours_spent), 0),
+            )
+            .join(TaskReworkHistory, TaskReworkHistory.task_id == Task.id)
+            .group_by(Task.id, Task.task_code, Task.title)
+            .order_by(func.sum(TaskReworkHistory.hours_spent).desc())
+        ).all()
+
+        by_task_list = []
+        for row in rework_by_task:
+            by_task_list.append({
+                "task_id": str(row[0]),
+                "task_code": row[1],
+                "title": row[2],
+                "rework_count": row[3],
+                "total_hours": float(row[4]),
+            })
+
+        return ReworkAnalyticsResponse(
+            total_rework_tasks=total_rework_entries,
+            total_rework_hours=round(total_rework_hours_f, 2),
+            rework_cost_percentage=rework_pct,
+            average_hours_per_rework=avg_hours,
+            open_rework_cycles=open_cycles,
+            rework_by_task=by_task_list,
+        )
 
     def get_upcoming_deadlines(self, days: int = 14) -> list[OverdueTask]:
         today = date.today()

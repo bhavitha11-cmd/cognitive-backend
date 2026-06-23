@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Union
 
-from jose import jwt, JWTError
+import jwt
 from passlib.context import CryptContext
 
 from app.core.config import settings
@@ -46,5 +46,5 @@ def create_refresh_token(subject: Union[str, Any]) -> str:
 
 
 def decode_token(token: str) -> dict:
-    """Decode and validate a JWT. Returns the payload or raises JWTError."""
+    """Decode and validate a JWT. Returns the payload or raises jwt.exceptions.InvalidTokenError."""
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])

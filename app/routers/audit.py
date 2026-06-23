@@ -1,17 +1,17 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.models.audit_log import AuditLog
 from app.schemas.common import APIResponse
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_permission
 
 router = APIRouter(
     prefix="/audit-logs",
     tags=["Audit Logs"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_user), Depends(require_permission("HR", "view"))],
 )
 
 
@@ -24,29 +24,26 @@ def list_audit_logs(
     size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    query = select(AuditLog).order_by(AuditLog.performed_at.desc())
-
+    filters = []
     if entity_type:
-        query = query.where(AuditLog.entity_type == entity_type)
+        filters.append(AuditLog.entity_type == entity_type)
     if entity_id:
-        query = query.where(AuditLog.entity_id == entity_id)
+        filters.append(AuditLog.entity_id == entity_id)
     if action:
-        query = query.where(AuditLog.action == action)
+        filters.append(AuditLog.action == action)
 
-    total = db.scalar(select(AuditLog).order_by(None).with_only_columns(AuditLog.id))
-    # Hack: count is separate
-    count_query = select(AuditLog).order_by(None).with_only_columns(AuditLog.id)
-    if entity_type:
-        count_query = count_query.where(AuditLog.entity_type == entity_type)
-    if entity_id:
-        count_query = count_query.where(AuditLog.entity_id == entity_id)
-    if action:
-        count_query = count_query.where(AuditLog.action == action)
-    total_count = len(db.scalars(count_query).all())
+    base_query = select(AuditLog)
+    if filters:
+        base_query = base_query.where(*filters)
+
+    total_count = db.scalar(
+        select(func.count()).select_from(base_query.subquery())
+    ) or 0
 
     offset = (page - 1) * size
-    query = query.offset(offset).limit(size)
-    logs = db.scalars(query).all()
+    logs = db.scalars(
+        base_query.order_by(AuditLog.performed_at.desc()).offset(offset).limit(size)
+    ).all()
 
     result = []
     for log in logs:

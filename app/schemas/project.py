@@ -1,24 +1,23 @@
 import uuid
 from datetime import date, datetime
-
+from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-VALID_STATUSES = {"DRAFT", "ACTIVE", "ON_HOLD", "COMPLETED", "CANCELLED"}
+VALID_STATUSES = {"Yet To Start", "In Progress", "Completed", "Cancelled", "On Hold"}
 VALID_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
-VALID_BILLING_TYPES = {"FIXED", "TIME_AND_MATERIAL", "RETAINER", "INTERNAL"}
 VALID_INVOICE_STATUSES = {"PENDING", "INVOICED", "PARTIALLY_INVOICED", "NOT_APPLICABLE"}
 VALID_FEEDBACK_STATUSES = {"PENDING", "RECEIVED", "POSITIVE", "NEGATIVE", "NA"}
 
 
 class ProjectCreate(BaseModel):
-    project_code: str = Field(..., min_length=1, max_length=50)
-    name: str = Field(..., min_length=1, max_length=500)
+    part_number: str = Field(..., min_length=1, max_length=50)
+    name: str = Field(..., min_length=3, max_length=500)
+    part_name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     client_id: uuid.UUID
     project_manager_id: uuid.UUID | None = None
-    status: str = "DRAFT"
+    status: str = "Yet To Start"
     priority: str = "MEDIUM"
-    billing_type: str = "FIXED"
     is_billable: bool = True
     planned_start_date: date | None = None
     planned_end_date: date | None = None
@@ -27,6 +26,7 @@ class ProjectCreate(BaseModel):
     invoice_status: str = "PENDING"
     tok_form: str | None = None
     feedback_status: str = "PENDING"
+    status_reason: str | None = None
 
     @field_validator("status")
     @classmethod
@@ -40,13 +40,6 @@ class ProjectCreate(BaseModel):
     def validate_priority(cls, v: str) -> str:
         if v not in VALID_PRIORITIES:
             raise ValueError(f"priority must be one of {sorted(VALID_PRIORITIES)}")
-        return v
-
-    @field_validator("billing_type")
-    @classmethod
-    def validate_billing_type(cls, v: str) -> str:
-        if v not in VALID_BILLING_TYPES:
-            raise ValueError(f"billing_type must be one of {sorted(VALID_BILLING_TYPES)}")
         return v
 
     @field_validator("invoice_status")
@@ -65,45 +58,30 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
-    project_code: str | None = Field(None, min_length=1, max_length=50)
-    name: str | None = Field(None, min_length=1, max_length=500)
+    part_number: str | None = Field(None, min_length=1, max_length=50)
+    name: str | None = Field(None, min_length=3, max_length=500)
+    part_name: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
     client_id: uuid.UUID | None = None
     project_manager_id: uuid.UUID | None = None
-    status: str | None = None
+    # NOTE: status, actual_start_date, actual_end_date, estimated_hours
+    # are system-managed and cannot be set manually via API update.
     priority: str | None = None
-    billing_type: str | None = None
     is_billable: bool | None = None
     planned_start_date: date | None = None
     planned_end_date: date | None = None
-    actual_start_date: date | None = None
-    actual_end_date: date | None = None
-    estimated_hours: float | None = None
     contract_hours: float | None = None
     invoice_status: str | None = None
     tok_form: str | None = None
     feedback_status: str | None = None
+    status_reason: str | None = None
     is_active: bool | None = None
-
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, v: str | None) -> str | None:
-        if v is not None and v not in VALID_STATUSES:
-            raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
-        return v
 
     @field_validator("priority")
     @classmethod
     def validate_priority(cls, v: str | None) -> str | None:
         if v is not None and v not in VALID_PRIORITIES:
             raise ValueError(f"priority must be one of {sorted(VALID_PRIORITIES)}")
-        return v
-
-    @field_validator("billing_type")
-    @classmethod
-    def validate_billing_type(cls, v: str | None) -> str | None:
-        if v is not None and v not in VALID_BILLING_TYPES:
-            raise ValueError(f"billing_type must be one of {sorted(VALID_BILLING_TYPES)}")
         return v
 
     @field_validator("invoice_status")
@@ -123,8 +101,9 @@ class ProjectUpdate(BaseModel):
 
 class ProjectResponse(BaseModel):
     id: uuid.UUID
-    project_code: str
+    part_number: str
     name: str
+    part_name: str
     description: str | None = None
     client_id: uuid.UUID
     client_name: str | None = None
@@ -132,7 +111,6 @@ class ProjectResponse(BaseModel):
     project_manager_name: str | None = None
     status: str
     priority: str
-    billing_type: str
     is_billable: bool
     planned_start_date: date | None = None
     planned_end_date: date | None = None
@@ -143,10 +121,43 @@ class ProjectResponse(BaseModel):
     invoice_status: str
     tok_form: str | None = None
     feedback_status: str
+    status_reason: str | None = None
     is_active: bool
     task_count: int = 0
     completed_task_count: int = 0
     actual_hours: float = 0.0
+    progress: float = 0.0          # hour-weighted completion %, auto-calculated
     created_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ── Project Member schemas ─────────────────────────────────────────────────────
+
+VALID_MEMBER_ROLES = {"ENGINEER", "LEAD", "CO_LEAD", "REVIEWER", "OBSERVER"}
+
+
+class ProjectMemberAdd(BaseModel):
+    employee_id: uuid.UUID
+    role: str = "ENGINEER"
+    allocation_pct: int = Field(default=100, ge=1, le=100)
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        if v not in VALID_MEMBER_ROLES:
+            raise ValueError(f"role must be one of {sorted(VALID_MEMBER_ROLES)}")
+        return v
+
+
+class ProjectMemberResponse(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: Optional[str] = None
+    employee_code: Optional[str] = None
+    role: str
+    allocation_pct: int
+    joined_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

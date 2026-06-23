@@ -6,10 +6,12 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.database.session import get_db
 from app.dependencies import get_current_user, require_permission
+from app.core.rbac import UserContext, require_data_access, DataAccessLevel
 from app.schemas.common import APIResponse
 from app.schemas.time_entry import (
     RejectTimeEntryRequest,
     TimeEntryCreate,
+    TimeEntryCreateBatch,
     TimeEntryUpdate,
 )
 from app.services.time_entry_service import TimeEntryService
@@ -28,7 +30,7 @@ def _get_service(
     try:
         uid = uuid.UUID(current_user_id)
     except (ValueError, AttributeError):
-        uid = None
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user identity")
     return TimeEntryService(db, current_user_id=uid)
 
 
@@ -37,7 +39,6 @@ def _get_service(
 @router.get(
     "",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Timesheets", "view"))],
 )
 def list_time_entries(
     skip: int = Query(0, ge=0),
@@ -49,7 +50,12 @@ def list_time_entries(
     date_to: date | None = Query(default=None),
     status: str | None = Query(default=None),
     service: TimeEntryService = Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
 ):
+    # SELF-level users can only list their own time entries
+    if user_ctx.data_access_level == DataAccessLevel.SELF:
+        employee_id = user_ctx.employee_id
+
     entries, total = service.get_all(
         skip=skip,
         limit=limit,
@@ -91,6 +97,28 @@ def create_time_entry(
         success=True,
         message="Time entry created successfully",
         data={"time_entry": entry.model_dump()},
+    )
+
+
+# ── Batch create ────────────────────────────────────────────────────────────────
+
+@router.post("/batch", response_model=APIResponse, status_code=status.HTTP_201_CREATED)
+def batch_create_time_entries(
+    data: TimeEntryCreateBatch,
+    service: TimeEntryService = Depends(_get_service),
+):
+    try:
+        entries = service.create_batch(data.entries)
+    except ValueError as e:
+        code = (
+            status.HTTP_404_NOT_FOUND if "not found" in str(e).lower()
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Time entries created successfully",
+        data={"time_entries": [e.model_dump() for e in entries]},
     )
 
 
@@ -297,4 +325,78 @@ def reject_time_entry(
         success=True,
         message="Time entry rejected",
         data={"time_entry": entry.model_dump()},
+    )
+
+
+# ── Batch Weekly Submit/Approve/Reject Endpoints ──────────────────────────────
+
+from pydantic import BaseModel
+
+class BatchSubmitWeekRequest(BaseModel):
+    date_from: date
+    date_to: date
+
+class BatchApproveWeekRequest(BaseModel):
+    employee_id: uuid.UUID
+    date_from: date
+    date_to: date
+
+class BatchRejectWeekRequest(BaseModel):
+    employee_id: uuid.UUID
+    date_from: date
+    date_to: date
+    reason: str | None = None
+
+
+@router.post("/submit-week", response_model=APIResponse)
+def submit_week(
+    body: BatchSubmitWeekRequest,
+    service: TimeEntryService = Depends(_get_service),
+):
+    try:
+        count = service.submit_week(body.date_from, body.date_to)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=f"Submitted {count} time entries for the week",
+        data={"count": count}
+    )
+
+@router.post(
+    "/approve-week",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Timesheets", "approve"))],
+)
+def approve_week(
+    body: BatchApproveWeekRequest,
+    service: TimeEntryService = Depends(_get_service),
+):
+    try:
+        count = service.approve_week(body.employee_id, body.date_from, body.date_to)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=f"Approved {count} time entries for the week",
+        data={"count": count}
+    )
+
+@router.post(
+    "/reject-week",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Timesheets", "approve"))],
+)
+def reject_week(
+    body: BatchRejectWeekRequest,
+    service: TimeEntryService = Depends(_get_service),
+):
+    try:
+        count = service.reject_week(body.employee_id, body.date_from, body.date_to, reason=body.reason)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=f"Rejected {count} time entries for the week",
+        data={"count": count}
     )

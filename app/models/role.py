@@ -36,6 +36,10 @@ class Role(Base):
     hierarchy_level: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     is_system_role: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    data_access_level: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="SELF", server_default="SELF",
+        comment="Row-level data visibility: FULL, MANAGED, TEAM, SELF"
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

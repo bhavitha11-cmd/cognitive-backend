@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 import traceback
 from fastapi import FastAPI, Request, Response
@@ -19,11 +20,15 @@ from app.routers.client import router as client_router
 from app.routers.scope_of_work import router as scope_of_work_router
 from app.routers.project import router as project_router
 from app.routers.task import router as task_router
+from app.routers.part import router as part_router
 from app.routers.attendance import router as attendance_router
 from app.routers.time_entry import router as time_entry_router
 from app.routers.leave import router as leave_router
 from app.routers.planning import router as planning_router
 from app.routers.analytics import router as analytics_router
+from app.routers.work_session import router as work_session_router
+from app.routers.employee_break import router as employee_break_router
+from app.routers.task_rework import router as task_rework_router
 from app.middleware.audit_context import set_audit_context
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -38,10 +43,17 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
+# Explicit origins from env (comma-separated)
 origins = [origin.strip() for origin in settings.FRONTEND_URL.split(",") if origin.strip()]
+
+# Allow all ngrok public URLs automatically (any subdomain of ngrok-free.app / ngrok.io / ngrok.dev)
+# This avoids having to update config every time ngrok generates a new URL.
+NGROK_ORIGIN_REGEX = r"https?://[a-zA-Z0-9\-]+\.ngrok(-free)?\.(app|io|dev)"
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=NGROK_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
@@ -56,7 +68,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):  # noqa
     logger.error(f"Unhandled exception on {request.method} {request.url.path}:\n{traceback.format_exc()}")
     origin = request.headers.get("origin", "")
     headers = {}
-    if origin in origins:
+    origin_allowed = origin in origins or bool(re.match(NGROK_ORIGIN_REGEX, origin))
+    if origin_allowed:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
     return JSONResponse(
@@ -72,10 +85,20 @@ async def security_headers_middleware(request: Request, call_next):
     response: Response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["X-XSS-Protection"] = "0"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none';"
+    )
+    response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
     if settings.ENVIRONMENT == "production":
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     return response
 
 
@@ -93,7 +116,9 @@ async def audit_context_middleware(request: Request, call_next):
 @app.on_event("startup")
 def on_startup():
     logger.info(f"[App] Starting {settings.PROJECT_NAME} v{settings.PROJECT_VERSION} (Environment: {settings.ENVIRONMENT})")
-    logger.info(f"[CORS] Allowed Frontend CORS Origins: {origins}")
+    logger.info(f"[CORS] Explicit origins: {origins}")
+    logger.info(f"[CORS] Also allowing all ngrok origins matching: {NGROK_ORIGIN_REGEX}")
+
 
     logger.info("[Database] Connecting to database...")
     max_retries = 5
@@ -111,11 +136,14 @@ def on_startup():
             logger.warning(f"[Database] Attempt {attempt}/{max_retries} failed, retrying in {retry_delay}s...")
             time.sleep(retry_delay)
 
-    logger.info("[Database] Creating tables if not exist...")
-    import app.models  # noqa: F401 — side-effect import registers all models with Base.metadata
-    from app.database.base import Base
-    Base.metadata.create_all(bind=engine)
-    logger.info("[Database] Tables ready.")
+    logger.info("[Database] Running Alembic migrations...")
+    from alembic.config import Config
+    from alembic import command
+    alembic_cfg = Config("alembic.ini")
+    command.upgrade(alembic_cfg, "head")
+    logger.info("[Database] Migrations complete.")
+
+
 
     logger.info("[Database] Running startup seeding...")
     from app.database.session import SessionLocal
@@ -163,11 +191,15 @@ app.include_router(client_router, prefix="/api/v1")
 app.include_router(scope_of_work_router, prefix="/api/v1")
 app.include_router(project_router, prefix="/api/v1")
 app.include_router(task_router, prefix="/api/v1")
+app.include_router(part_router, prefix="/api/v1")
 app.include_router(attendance_router, prefix="/api/v1")
 app.include_router(time_entry_router, prefix="/api/v1")
 app.include_router(leave_router, prefix="/api/v1")
 app.include_router(planning_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
+app.include_router(work_session_router, prefix="/api/v1")
+app.include_router(employee_break_router, prefix="/api/v1")
+app.include_router(task_rework_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["General"])
@@ -180,11 +212,3 @@ async def health_check() -> dict[str, str]:
     return {"status": "healthy"}
 
 
-@app.get("/db-check")
-def db_check():
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        return {"database": "connected"}
-    except Exception as e:
-        return {"database": "failed", "error": str(e)}

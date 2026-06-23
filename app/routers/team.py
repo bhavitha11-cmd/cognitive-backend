@@ -20,8 +20,8 @@ def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(g
     from uuid import UUID
     try:
         uid = UUID(current_user_id)
-    except ValueError:
-        uid = None
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user identity")
     return TeamService(db, current_user_id=uid)
 
 

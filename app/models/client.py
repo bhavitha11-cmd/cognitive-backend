@@ -31,10 +31,21 @@ class Client(Base):
     contact_person: Mapped[str | None] = mapped_column(String(200), nullable=True)
     contact_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     contact_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    alternate_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
     address: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default="Active", server_default="Active", nullable=False
+    )
+    deactivation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deactivated_by: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("employees.id", ondelete="SET NULL"),

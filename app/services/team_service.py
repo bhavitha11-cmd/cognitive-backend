@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -152,7 +152,7 @@ class TeamService:
                 "left_at": None,
                 "role_in_team": data.role_in_team,
                 "is_primary_team": data.is_primary_team,
-                "joined_at": datetime.utcnow(),
+                "joined_at": datetime.now(timezone.utc),
             })
         else:
             if data.is_primary_team:
@@ -207,7 +207,7 @@ class TeamService:
         if member.team_id != team_id:
             raise ValueError("Member does not belong to the specified team")
 
-        self.member_repo.update(member, {"left_at": datetime.utcnow(), "is_primary_team": False})
+        self.member_repo.update(member, {"left_at": datetime.now(timezone.utc), "is_primary_team": False})
         AuditService.log(
             self.db, "team_member", member_id, "REMOVE_MEMBER",
             performed_by=self.current_user_id,

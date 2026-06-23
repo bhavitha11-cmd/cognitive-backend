@@ -13,7 +13,7 @@ from app.schemas.employee import (
     TransferDepartmentRequest,
 )
 
-from app.dependencies import get_current_user, require_permission
+from app.dependencies import get_current_user, require_permission, require_any_permission
 
 router = APIRouter(
     prefix="/employees",
@@ -31,15 +31,15 @@ def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(g
     from uuid import UUID
     try:
         uid = UUID(current_user_id)
-    except ValueError:
-        uid = None
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user identity")
     return EmployeeService(db, current_user_id=uid)
 
 
 @router.get(
     "",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("HR", "view"))],
+    dependencies=[Depends(require_any_permission(("HR", "view"), ("Projects", "view"), ("Tasks", "view")))],
 )
 def list_employees(
     search: str | None = Query(None, description="Search by name or email"),
@@ -92,7 +92,7 @@ def create_employee(employee_in: EmployeeCreate, service=Depends(_get_service)):
 @router.get(
     "/{id}",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("HR", "view"))],
+    dependencies=[Depends(require_any_permission(("HR", "view"), ("Projects", "view"), ("Tasks", "view")))],
 )
 def get_employee(id: str, service=Depends(_get_service)):
     try:

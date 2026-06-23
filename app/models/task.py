@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -72,6 +73,16 @@ class Task(Base):
     progress: Mapped[float] = mapped_column(Numeric(5, 4), default=0, nullable=False)
     remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Rework tracking
+    rework_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_rework_hours: Mapped[float] = mapped_column(
+        Numeric(8, 2), default=0, nullable=False
+    )
+    original_estimated_hours: Mapped[float | None] = mapped_column(
+        Numeric(8, 2), nullable=True
+    )
+
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("employees.id", ondelete="SET NULL"),

@@ -24,6 +24,10 @@ from app.models.leave_balance import LeaveBalance
 from app.models.leave_request import LeaveRequest
 from app.models.employee_schedule import EmployeeSchedule
 from app.models.task_dependency import TaskDependency
+from app.models.task_work_session import TaskWorkSession
+from app.models.employee_break import EmployeeBreak
+from app.models.task_rework_history import TaskReworkHistory
+from app.models.holiday import Holiday
 
 __all__ = [
     "Role",
@@ -52,4 +56,5 @@ __all__ = [
     "LeaveRequest",
     "EmployeeSchedule",
     "TaskDependency",
+    "Holiday",
 ]

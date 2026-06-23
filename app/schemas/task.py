@@ -3,7 +3,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-VALID_TASK_STATUSES = {"NOT_STARTED", "IN_PROGRESS", "ON_HOLD", "COMPLETED", "CANCELLED"}
+VALID_TASK_STATUSES = {"NOT_STARTED", "IN_PROGRESS", "ON_HOLD", "COMPLETED", "CANCELLED", "REOPENED"}
 VALID_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 VALID_DEPT_CATS = {"CAD", "CAM", "GEN", "SALES", "ADMIN", "MKRT", "SUPRT"}
 
@@ -24,6 +24,7 @@ class TaskCreate(BaseModel):
     received_date: date | None = None
     planned_delivery_date: date | None = None
     remarks: str | None = None
+    assigned_employee_id: uuid.UUID | None = None
 
     @field_validator("department_category")
     @classmethod
@@ -67,6 +68,7 @@ class TaskUpdate(BaseModel):
     progress: float | None = None
     remarks: str | None = None
     is_active: bool | None = None
+    assigned_employee_id: uuid.UUID | None = None
 
     @field_validator("department_category")
     @classmethod
@@ -173,6 +175,9 @@ class TaskResponse(BaseModel):
     progress: float
     remarks: str | None
     is_active: bool
+    rework_count: int = 0
+    total_rework_hours: float = 0.0
+    original_estimated_hours: float | None = None
     assignments: list[TaskAssignmentResponse] = []
     created_at: datetime | None
 
@@ -195,6 +200,9 @@ class TaskListResponse(BaseModel):
     planned_end_date: date | None
     planned_delivery_date: date | None
     actual_delivery_date: date | None
+    rework_count: int = 0
+    total_rework_hours: float = 0.0
     assignee_count: int = 0
+    assignments: list[TaskAssignmentResponse] = []
 
     model_config = ConfigDict(from_attributes=True)

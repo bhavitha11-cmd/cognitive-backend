@@ -26,7 +26,7 @@ class DashboardStats(BaseModel):
 
 class PlanVsActualProject(BaseModel):
     id: UUID
-    project_code: str
+    part_number: str
     name: str
     client_name: str | None = None
     status: str
@@ -121,3 +121,43 @@ class ScopeDistribution(BaseModel):
 
 class ScopeDistributionResponse(BaseModel):
     scopes: list[ScopeDistribution]
+
+
+class SessionAnalytics(BaseModel):
+    employee_id: UUID
+    employee_name: str | None = None
+    total_session_minutes: int = 0
+    total_break_minutes: int = 0
+    net_work_minutes: int = 0
+    session_count: int = 0
+    avg_session_duration_minutes: float = 0.0
+    billable_session_hours: float = 0.0
+    idle_minutes: int = 0
+    period_start: date
+    period_end: date
+
+
+class ReworkAnalytics(BaseModel):
+    total_rework_tasks: int = 0
+    total_rework_hours: float = 0.0
+    rework_cost_percentage: float = 0.0
+    average_hours_per_rework: float = 0.0
+    open_rework_cycles: int = 0
+    rework_by_task: list[dict] = []
+
+
+class SessionAnalyticsResponse(BaseModel):
+    employees: list[SessionAnalytics]
+    period_start: date
+    period_end: date
+    total_company_session_hours: float = 0
+    total_company_break_hours: float = 0
+
+
+class ReworkAnalyticsResponse(BaseModel):
+    total_rework_tasks: int = 0
+    total_rework_hours: float = 0.0
+    rework_cost_percentage: float = 0.0
+    average_hours_per_rework: float = 0.0
+    open_rework_cycles: int = 0
+    rework_by_task: list[dict]

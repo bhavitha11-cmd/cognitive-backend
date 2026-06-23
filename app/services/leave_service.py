@@ -554,11 +554,8 @@ class LeaveService:
         if not req:
             raise ValueError(f"Leave request with id {id} not found")
 
-        # Only the employee who applied OR current user with admin rights can cancel
         if req.employee_id != self.current_user_id:
-            # Admin bypass is handled via RBAC in the router; here we allow it
-            # by not blocking if the current user is different (router controls access)
-            pass
+            raise ValueError("You can only cancel your own leave requests")
 
         if req.status != "PENDING":
             raise ValueError(

@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from passlib.context import CryptContext
@@ -55,11 +55,15 @@ class EmployeeService:
         raise ValueError(f"Employee with id or code '{id_str}' not found")
 
     def _generate_employee_code(self) -> str:
-        latest = self.repo.db.scalars(
-            select(Employee).order_by(Employee.created_at.desc()).limit(1)
-        ).first()
-        if latest:
-            last_num = int(latest.employee_code.split("-")[1])
+        from sqlalchemy import func as _func
+        max_code = self.repo.db.scalar(
+            select(_func.max(Employee.employee_code))
+        )
+        if max_code:
+            try:
+                last_num = int(max_code.split("-")[1])
+            except (IndexError, ValueError):
+                last_num = 0
             next_num = last_num + 1
         else:
             next_num = 1
@@ -213,15 +217,24 @@ class EmployeeService:
         employee_data = data.model_dump(exclude={"password", "role_ids", "is_department_head", "team_id", "is_team_lead"})
         employee_data["account_status"] = status
         employee_data["password_hash"] = pwd_context.hash(data.password)
-        employee_data["employee_code"] = self._generate_employee_code()
 
         if not employee_data.get("display_name"):
             employee_data["display_name"] = f"{data.first_name} {data.last_name}".strip()
 
         try:
-            employee = Employee(**employee_data)
-            self.db.add(employee)
-            self.db.flush()  # get ID without committing
+            from sqlalchemy.exc import IntegrityError as _IntegrityError
+            for _attempt in range(3):
+                employee_data["employee_code"] = self._generate_employee_code()
+                employee = Employee(**employee_data)
+                self.db.add(employee)
+                try:
+                    self.db.flush()  # get ID without committing
+                    break
+                except _IntegrityError as _ie:
+                    self.db.rollback()
+                    if "employee_code" in str(_ie.orig) and _attempt < 2:
+                        continue
+                    raise
 
             for role_id in data.role_ids:
                 emp_role = __import__("app.models.employee_role", fromlist=["EmployeeRole"]).EmployeeRole(
@@ -377,7 +390,7 @@ class EmployeeService:
                     # 1. Deactivate old assignments
                     for ta in employee.team_assignments:
                         if ta.left_at is None:
-                            ta.left_at = datetime.utcnow()
+                            ta.left_at = datetime.now(timezone.utc)
                             ta.is_primary_team = False
                             self.db.add(ta)
                     
@@ -424,7 +437,7 @@ class EmployeeService:
                 # Remove from all teams
                 for ta in employee.team_assignments:
                     if ta.left_at is None:
-                        ta.left_at = datetime.utcnow()
+                        ta.left_at = datetime.now(timezone.utc)
                         ta.is_primary_team = False
                         self.db.add(ta)
             self.db.commit()
@@ -540,7 +553,7 @@ class EmployeeService:
             if not member or member.left_at is not None:
                 continue
             member_repo.update(member, {
-                "left_at": datetime.utcnow(),
+                "left_at": datetime.now(timezone.utc),
                 "is_primary_team": False,
             })
             # Assign new lead

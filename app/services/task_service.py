@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -19,6 +19,7 @@ from app.schemas.task import (
     TaskUpdate,
 )
 from app.services.audit_service import AuditService
+from app.services.project_metrics_service import ProjectMetricsService
 
 
 class TaskService:
@@ -37,27 +38,37 @@ class TaskService:
         status: str | None = None,
         dept_cat: str | None = None,
         search: str | None = None,
+        user_context=None,
     ) -> tuple[list[TaskListResponse], int]:
-        tasks = self.repo.get_all(
-            skip=skip,
-            limit=limit,
-            project_id=project_id,
-            status=status,
-            dept_cat=dept_cat,
-            search=search,
-        )
-        total = self.repo.count(
-            project_id=project_id,
-            status=status,
-            dept_cat=dept_cat,
-            search=search,
-        )
+        if user_context:
+            tasks = self.repo.get_all_scoped(
+                user_context,
+                skip=skip, limit=limit, project_id=project_id,
+                status=status, dept_cat=dept_cat, search=search,
+            )
+            total = self.repo.count_scoped(
+                user_context,
+                project_id=project_id, status=status,
+                dept_cat=dept_cat, search=search,
+            )
+        else:
+            tasks = self.repo.get_all(
+                skip=skip, limit=limit, project_id=project_id,
+                status=status, dept_cat=dept_cat, search=search,
+            )
+            total = self.repo.count(
+                project_id=project_id, status=status,
+                dept_cat=dept_cat, search=search,
+            )
         return [self._build_list_response(t) for t in tasks], total
 
-    def get_by_id(self, id: UUID) -> TaskResponse:
+    def get_by_id(self, id: UUID, user_context=None) -> TaskResponse:
         task = self.repo.get_by_id(id, load_assignments=True)
         if not task:
             raise ValueError(f"Task with id {id} not found")
+        # Enforce visibility check if user_context is provided
+        if user_context and not self.repo.is_visible_to_user(id, user_context):
+            raise ValueError("You do not have permission to view this task")
         return self._build_response(task)
 
     def get_by_project(self, project_id: UUID) -> list[TaskListResponse]:
@@ -66,16 +77,46 @@ class TaskService:
 
     # ── Create ─────────────────────────────────────────────────────────────────
 
-    def create(self, data: TaskCreate) -> TaskResponse:
+    def create(self, data: TaskCreate, user_context=None) -> TaskResponse:
         # Validate project exists and is in an acceptable state
         project = self._get_project(data.project_id)
         if not project:
             raise ValueError(f"Project with id {data.project_id} not found")
-        if hasattr(project, "status") and project.status not in ("ACTIVE", "DRAFT", "active", "draft"):
+        if hasattr(project, "status") and project.status not in ("Yet To Start", "In Progress", "YET TO START", "IN PROGRESS"):
             raise ValueError(
                 f"Cannot add tasks to a project with status '{project.status}'. "
-                "Project must be ACTIVE or DRAFT."
+                "Project must be Yet To Start or In Progress."
             )
+
+        # Validate task planned dates against project boundaries
+        if data.planned_end_date and hasattr(project, "planned_end_date") and project.planned_end_date:
+            if data.planned_end_date > project.planned_end_date:
+                raise ValueError(
+                    f"Task Planned End Date ({data.planned_end_date}) cannot be after "
+                    f"the Project End Date ({project.planned_end_date})."
+                )
+        if data.planned_start_date and data.planned_end_date and data.planned_start_date > data.planned_end_date:
+            raise ValueError("Task Planned Start Date cannot be after its Planned End Date.")
+
+        # Enforce: only project members, PM, or admins can create tasks
+        if user_context is not None:
+            from app.core.rbac import DataAccessLevel
+            if not (user_context.is_super_admin or user_context.data_access_level == DataAccessLevel.FULL):
+                is_pm = (project.project_manager_id == user_context.employee_id)
+                if not is_pm:
+                    from app.models.project_member import ProjectMember
+                    member = self.db.scalars(
+                        select(ProjectMember).where(
+                            ProjectMember.project_id == data.project_id,
+                            ProjectMember.employee_id == user_context.employee_id,
+                            ProjectMember.left_at.is_(None),
+                        )
+                    ).first()
+                    if not member:
+                        raise ValueError(
+                            "You are not a member of this project. "
+                            "Only project members, the project manager, or an admin can create tasks."
+                        )
 
         # Validate task_code uniqueness within project
         existing = self.repo.get_by_code_and_project(data.task_code, data.project_id)
@@ -95,11 +136,32 @@ class TaskService:
                     dept_cat = scope.department_category
 
         task_data = data.model_dump()
+        assigned_employee_id = task_data.pop("assigned_employee_id", None)
         task_data["department_category"] = dept_cat
         if self.current_user_id:
             task_data["created_by"] = self.current_user_id
 
         task = self.repo.create(task_data)
+
+        # Create auto-assignment if assigned_employee_id is provided
+        if assigned_employee_id:
+            employee = self.db.get(Employee, assigned_employee_id)
+            if not employee:
+                raise ValueError(f"Employee with id {assigned_employee_id} not found")
+            if not employee.is_active:
+                raise ValueError("Cannot assign an inactive employee to a task")
+
+            assignment_data = {
+                "task_id": task.id,
+                "employee_id": assigned_employee_id,
+                "assigned_by": self.current_user_id,
+                "assigned_hours": float(task.estimated_hours or 0),
+                "planned_start_date": task.planned_start_date,
+                "planned_end_date": task.planned_end_date,
+                "notes": "Auto-assigned on task creation",
+                "status": "ASSIGNED",
+            }
+            self.repo.create_assignment(assignment_data)
 
         # Update task count on project if the project model supports it
         self._increment_project_task_count(project)
@@ -116,6 +178,10 @@ class TaskService:
         )
 
         task = self.repo.get_by_id(task.id, load_assignments=True)
+
+        # Recalculate project metrics (estimated_hours, progress, status, dates)
+        self._trigger_project_recalc(task.project_id)
+
         return self._build_response(task)
 
     # ── Update ─────────────────────────────────────────────────────────────────
@@ -126,6 +192,8 @@ class TaskService:
             raise ValueError(f"Task with id {id} not found")
 
         update_data = data.model_dump(exclude_unset=True)
+        has_assignee_field = "assigned_employee_id" in update_data
+        assigned_employee_id = update_data.pop("assigned_employee_id", None)
 
         # Validate task_code uniqueness within project (excluding self)
         if "task_code" in update_data and update_data["task_code"] != task.task_code:
@@ -153,6 +221,37 @@ class TaskService:
         old_values = {k: getattr(task, k, None) for k in update_data}
         task = self.repo.update(task, update_data)
 
+        # Handle assignee changes
+        if has_assignee_field:
+            active_assigns = [a for a in (task.assignments or []) if a.status != "CANCELLED"]
+            current_emp_id = active_assigns[0].employee_id if active_assigns else None
+            
+            # If the assignee has changed
+            if assigned_employee_id != current_emp_id:
+                # Cancel existing active assignments
+                for a in active_assigns:
+                    self.repo.update_assignment(a, {"status": "CANCELLED"})
+                
+                # If a new employee is assigned, create assignment
+                if assigned_employee_id:
+                    employee = self.db.get(Employee, assigned_employee_id)
+                    if not employee:
+                        raise ValueError(f"Employee with id {assigned_employee_id} not found")
+                    if not employee.is_active:
+                        raise ValueError("Cannot assign an inactive employee to a task")
+                    
+                    assignment_data = {
+                        "task_id": task.id,
+                        "employee_id": assigned_employee_id,
+                        "assigned_by": self.current_user_id,
+                        "assigned_hours": float(task.estimated_hours or 0),
+                        "planned_start_date": task.planned_start_date,
+                        "planned_end_date": task.planned_end_date,
+                        "notes": "Assigned on task update",
+                        "status": "ASSIGNED",
+                    }
+                    self.repo.create_assignment(assignment_data)
+
         AuditService.log(
             self.db, "task", id, "UPDATE",
             performed_by=self.current_user_id,
@@ -161,6 +260,10 @@ class TaskService:
         )
 
         task = self.repo.get_by_id(id, load_assignments=True)
+
+        # Recalculate project metrics whenever task changes
+        self._trigger_project_recalc(task.project_id)
+
         return self._build_response(task)
 
     # ── Delete ─────────────────────────────────────────────────────────────────
@@ -175,6 +278,8 @@ class TaskService:
                 "Only NOT_STARTED or CANCELLED tasks can be deleted."
             )
 
+        project_id = task.project_id  # capture before soft-delete
+
         self.repo.update(task, {"is_active": False})
 
         AuditService.log(
@@ -182,6 +287,9 @@ class TaskService:
             performed_by=self.current_user_id,
             old_value={"task_code": task.task_code, "status": task.status},
         )
+
+        # Recalculate project metrics after task removal
+        self._trigger_project_recalc(project_id)
 
     # ── Assignments ────────────────────────────────────────────────────────────
 
@@ -239,7 +347,7 @@ class TaskService:
 
         # Auto-set completed_at when status changes to COMPLETED
         if update_data.get("status") == "COMPLETED" and not assignment.completed_at:
-            update_data["completed_at"] = datetime.utcnow()
+            update_data["completed_at"] = datetime.now(timezone.utc)
 
         old_values = {k: getattr(assignment, k, None) for k in update_data}
         assignment = self.repo.update_assignment(assignment, update_data)
@@ -295,6 +403,19 @@ class TaskService:
                 self.db.commit()
         except Exception:
             pass
+
+    def _trigger_project_recalc(self, project_id: UUID) -> None:
+        """Fire-and-forget project metrics recalculation. Non-blocking on error."""
+        import logging
+        try:
+            ProjectMetricsService.recalculate(self.db, project_id)
+            self.db.commit()
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "[TaskService] project_metrics recalc failed for project %s",
+                project_id, exc_info=True,
+            )
+            self.db.rollback()
 
     def _build_assignment_response(self, assignment: TaskAssignment) -> TaskAssignmentResponse:
         emp_name = emp_code = None
@@ -365,6 +486,9 @@ class TaskService:
             progress=float(task.progress or 0),
             remarks=task.remarks,
             is_active=task.is_active,
+            rework_count=task.rework_count or 0,
+            total_rework_hours=float(task.total_rework_hours or 0),
+            original_estimated_hours=float(task.original_estimated_hours or 0) if task.original_estimated_hours else None,
             assignments=assignments,
             created_at=task.created_at,
         )
@@ -380,6 +504,10 @@ class TaskService:
         active_assignments = [
             a for a in (task.assignments or []) if a.status != "CANCELLED"
         ]
+
+        assignments_response = []
+        for a in active_assignments:
+            assignments_response.append(self._build_assignment_response(a))
 
         return TaskListResponse(
             id=task.id,
@@ -397,5 +525,8 @@ class TaskService:
             planned_end_date=task.planned_end_date,
             planned_delivery_date=task.planned_delivery_date,
             actual_delivery_date=task.actual_delivery_date,
+            rework_count=task.rework_count or 0,
+            total_rework_hours=float(task.total_rework_hours or 0),
             assignee_count=len(active_assignments),
+            assignments=assignments_response,
         )

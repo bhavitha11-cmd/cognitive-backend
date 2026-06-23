@@ -16,7 +16,7 @@ class TimeEntryCreate(BaseModel):
     task_id: uuid.UUID
     date: date_type
     hours_spent: float = Field(gt=0, le=24)
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=2000)
     entry_type: str = "REGULAR"
     is_billable: bool = True
 
@@ -31,7 +31,7 @@ class TimeEntryCreate(BaseModel):
 class TimeEntryUpdate(BaseModel):
     date: Optional[date_type] = None
     hours_spent: Optional[float] = Field(default=None, gt=0, le=24)
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=2000)
     entry_type: Optional[str] = None
     is_billable: Optional[bool] = None
 
@@ -80,5 +80,9 @@ class TimesheetSummary(BaseModel):
     by_task: list[dict]
 
 
+class TimeEntryCreateBatch(BaseModel):
+    entries: list[TimeEntryCreate] = Field(min_length=1, max_length=50)
+
+
 class RejectTimeEntryRequest(BaseModel):
-    reason: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=1000)

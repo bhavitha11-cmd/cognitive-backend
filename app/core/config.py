@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # Environment Settings
     ENVIRONMENT: str = "development"
-    DEBUG: bool = True
+    DEBUG: bool = False
 
     # Database Settings
     DATABASE_URL: str

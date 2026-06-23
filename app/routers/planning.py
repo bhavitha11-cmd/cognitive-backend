@@ -26,13 +26,14 @@ def _get_service(
     try:
         uid = uuid.UUID(current_user_id)
     except (ValueError, AttributeError):
-        uid = None
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user identity")
     return PlanningService(db, current_user_id=uid)
 
 
 # ── Employee Schedules ─────────────────────────────────────────────────────────
 
-@router.post("/schedules", response_model=APIResponse, status_code=201)
+@router.post("/schedules", response_model=APIResponse, status_code=201,
+             dependencies=[Depends(require_permission("Projects", "edit"))])
 def create_schedule(
     data: EmployeeScheduleCreate,
     service: PlanningService = Depends(_get_service),
@@ -41,7 +42,8 @@ def create_schedule(
     return APIResponse(success=True, message="Schedule created", data={"schedule": result.model_dump()})
 
 
-@router.put("/schedules/{schedule_id}", response_model=APIResponse)
+@router.put("/schedules/{schedule_id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Projects", "edit"))])
 def update_schedule(
     schedule_id: uuid.UUID,
     data: EmployeeScheduleUpdate,
@@ -51,7 +53,8 @@ def update_schedule(
     return APIResponse(success=True, message="Schedule updated", data={"schedule": result.model_dump()})
 
 
-@router.get("/schedules", response_model=APIResponse)
+@router.get("/schedules", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Projects", "view"))])
 def list_schedules(
     employee_id: uuid.UUID = Query(...),
     from_date: date = Query(...),
@@ -64,7 +67,8 @@ def list_schedules(
 
 # ── Employee Capacity ──────────────────────────────────────────────────────────
 
-@router.get("/capacity/{employee_id}", response_model=APIResponse)
+@router.get("/capacity/{employee_id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Projects", "view"))])
 def get_capacity(
     employee_id: uuid.UUID,
     from_date: date = Query(...),
@@ -77,7 +81,8 @@ def get_capacity(
 
 # ── Task Dependencies ──────────────────────────────────────────────────────────
 
-@router.post("/dependencies", response_model=APIResponse, status_code=201)
+@router.post("/dependencies", response_model=APIResponse, status_code=201,
+             dependencies=[Depends(require_permission("Projects", "edit"))])
 def create_dependency(
     data: TaskDependencyCreate,
     service: PlanningService = Depends(_get_service),
@@ -86,7 +91,8 @@ def create_dependency(
     return APIResponse(success=True, message="Dependency created", data={"dependency": result.model_dump()})
 
 
-@router.delete("/dependencies/{dependency_id}", response_model=APIResponse)
+@router.delete("/dependencies/{dependency_id}", response_model=APIResponse,
+               dependencies=[Depends(require_permission("Projects", "edit"))])
 def delete_dependency(
     dependency_id: uuid.UUID,
     service: PlanningService = Depends(_get_service),
@@ -95,7 +101,8 @@ def delete_dependency(
     return APIResponse(success=True, message="Dependency deleted")
 
 
-@router.get("/dependencies/{task_id}", response_model=APIResponse)
+@router.get("/dependencies/{task_id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Projects", "view"))])
 def get_task_dependencies(
     task_id: uuid.UUID,
     service: PlanningService = Depends(_get_service),
@@ -104,7 +111,8 @@ def get_task_dependencies(
     return APIResponse(success=True, message="Dependencies retrieved", data={"dependencies": [d.model_dump() for d in deps]})
 
 
-@router.get("/project-dependencies/{project_id}", response_model=APIResponse)
+@router.get("/project-dependencies/{project_id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Projects", "view"))])
 def get_project_dependencies(
     project_id: uuid.UUID,
     service: PlanningService = Depends(_get_service),
@@ -115,7 +123,8 @@ def get_project_dependencies(
 
 # ── Gantt ──────────────────────────────────────────────────────────────────────
 
-@router.get("/gantt/{project_id}", response_model=APIResponse)
+@router.get("/gantt/{project_id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Projects", "view"))])
 def get_gantt(
     project_id: uuid.UUID,
     service: PlanningService = Depends(_get_service),
@@ -124,7 +133,8 @@ def get_gantt(
     return APIResponse(success=True, message="Gantt data retrieved", data=result.model_dump())
 
 
-@router.post("/schedule/{project_id}", response_model=APIResponse)
+@router.post("/schedule/{project_id}", response_model=APIResponse,
+             dependencies=[Depends(require_permission("Projects", "edit"))])
 def schedule_project(
     project_id: uuid.UUID,
     service: PlanningService = Depends(_get_service),
