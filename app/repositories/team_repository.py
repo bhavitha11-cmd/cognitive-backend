@@ -9,15 +9,16 @@ from app.repositories.base import BaseRepository
 
 
 class TeamRepository(BaseRepository):
-    def get_all(self) -> list[Team]:
+    def get_all(self, department_id: UUID | None = None) -> list[Team]:
+        stmt = select(Team).options(
+            joinedload(Team.department),
+            selectinload(Team.members).selectinload(TeamMember.employee),
+        )
+        if department_id:
+            stmt = stmt.where(Team.department_id == department_id)
         return list(
             self.db.scalars(
-                select(Team)
-                .options(
-                    joinedload(Team.department),
-                    selectinload(Team.members).selectinload(TeamMember.employee),
-                )
-                .order_by(Team.team_name)
+                stmt.order_by(Team.team_name)
             ).unique().all()
         )
 

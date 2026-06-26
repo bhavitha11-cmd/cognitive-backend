@@ -32,6 +32,10 @@ class AttendanceRuleUpdate(BaseModel):
     half_day_hours: Optional[float] = None
     late_mark_after_minutes: Optional[int] = None
     work_days: Optional[str] = None
+    required_productive_hours: Optional[float] = None
+    overtime_threshold_hours: Optional[float] = None
+    max_break_minutes: Optional[int] = None
+    min_break_minutes: Optional[int] = None
 
     @field_validator("office_start_time", mode="before")
     @classmethod
@@ -51,6 +55,10 @@ class AttendanceRuleResponse(BaseModel):
     half_day_hours: float
     late_mark_after_minutes: int
     work_days: str
+    required_productive_hours: float
+    overtime_threshold_hours: float
+    max_break_minutes: int
+    min_break_minutes: int
 
     model_config = ConfigDict(from_attributes=True)
 

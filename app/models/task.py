@@ -32,6 +32,7 @@ class Task(Base):
         Index("ix_tasks_department_category", "department_category"),
         Index("ix_tasks_parent_task_id", "parent_task_id"),
         Index("ix_tasks_is_active", "is_active"),
+        Index("ix_tasks_team_id", "team_id"),
         UniqueConstraint("project_id", "task_code", name="uq_task_code_per_project"),
     )
 
@@ -42,6 +43,11 @@ class Task(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="RESTRICT"),
         nullable=False,
     )
     parent_task_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -99,6 +105,7 @@ class Task(Base):
     )
 
     project: Mapped["Project"] = relationship("Project", back_populates="tasks")
+    team: Mapped["Team"] = relationship("Team", foreign_keys=[team_id])
     scope: Mapped["ScopeOfWork | None"] = relationship("ScopeOfWork", back_populates="tasks")
     parent_task: Mapped["Task | None"] = relationship(
         "Task",

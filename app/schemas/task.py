@@ -11,6 +11,7 @@ VALID_DEPT_CATS = {"CAD", "CAM", "GEN", "SALES", "ADMIN", "MKRT", "SUPRT"}
 class TaskCreate(BaseModel):
     task_code: str = Field(min_length=1, max_length=100)
     project_id: uuid.UUID
+    team_id: uuid.UUID
     parent_task_id: uuid.UUID | None = None
     title: str = Field(min_length=1, max_length=500)
     description: str | None = None
@@ -53,6 +54,7 @@ class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=500)
     description: str | None = None
     parent_task_id: uuid.UUID | None = None
+    team_id: uuid.UUID | None = None
     scope_of_work_id: uuid.UUID | None = None
     department_category: str | None = None
     status: str | None = None
@@ -157,6 +159,9 @@ class TaskResponse(BaseModel):
     description: str | None
     project_id: uuid.UUID
     project_name: str | None = None
+    team_id: uuid.UUID
+    team_name: str | None = None
+    team_code: str | None = None
     parent_task_id: uuid.UUID | None
     scope_of_work_id: uuid.UUID | None
     scope_name: str | None = None
@@ -190,6 +195,9 @@ class TaskListResponse(BaseModel):
     title: str
     project_id: uuid.UUID
     project_name: str | None = None
+    team_id: uuid.UUID
+    team_name: str | None = None
+    team_code: str | None = None
     department_category: str | None
     status: str
     priority: str

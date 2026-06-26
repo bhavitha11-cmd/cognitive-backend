@@ -16,6 +16,7 @@ from app.schemas.planning import (
     EmployeeScheduleResponse, TaskDependencyResponse,
 )
 from app.services.audit_service import AuditService
+from app.services.working_day_engine import WorkingDayEngine
 
 
 class PlanningService:
@@ -307,7 +308,7 @@ class PlanningService:
             remaining = max(0, float(t.estimated_hours) - float(t.actual_hours))
             duration_days = max(1, round(remaining / 8))
 
-            est_end = est_start + timedelta(days=duration_days)
+            est_end = WorkingDayEngine.add_working_days(est_start, duration_days, self.db)
 
             t.scheduled_start_date = est_start
             t.scheduled_end_date = est_end

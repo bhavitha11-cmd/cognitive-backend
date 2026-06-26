@@ -16,6 +16,7 @@ class ProjectRepository(BaseRepository):
             .options(
                 joinedload(Project.client),
                 joinedload(Project.project_manager),
+                joinedload(Project.department),
             )
             .where(Project.id == id, Project.is_active == True)  # noqa: E712
         )
@@ -48,6 +49,7 @@ class ProjectRepository(BaseRepository):
         stmt = select(Project).options(
             joinedload(Project.client),
             joinedload(Project.project_manager),
+            joinedload(Project.department),
         )
         stmt = self._apply_filters(stmt, search, client_id, status, is_active)
         stmt = stmt.order_by(Project.created_at.desc()).offset(skip).limit(limit)
@@ -160,6 +162,7 @@ class ProjectRepository(BaseRepository):
         stmt = select(Project).options(
             joinedload(Project.client),
             joinedload(Project.project_manager),
+            joinedload(Project.department),
         )
         stmt = self._apply_filters(stmt, search, client_id, status, is_active)
         stmt = self._apply_scope_filter(stmt, user_context)

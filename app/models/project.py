@@ -29,6 +29,7 @@ class Project(Base):
         Index("ix_projects_status", "status"),
         Index("ix_projects_is_active", "is_active"),
         Index("ix_projects_created_by", "created_by"),
+        Index("ix_projects_department_id", "department_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -52,6 +53,11 @@ class Project(Base):
         UUID(as_uuid=True),
         ForeignKey("employees.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    department_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("departments.id", ondelete="RESTRICT"),
+        nullable=False,
     )
 
     # Status / classification
@@ -112,6 +118,9 @@ class Project(Base):
     )
     project_manager: Mapped["Employee | None"] = relationship(
         "Employee", foreign_keys=[project_manager_id]
+    )
+    department: Mapped["Department"] = relationship(
+        "Department", foreign_keys=[department_id]
     )
     tasks: Mapped[list["Task"]] = relationship(
         "Task", back_populates="project", lazy="select"

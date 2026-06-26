@@ -29,9 +29,10 @@ def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(g
 def list_teams(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    department_id: uuid.UUID | None = Query(None),
     service: TeamService = Depends(_get_service),
 ):
-    teams = service.get_all()
+    teams = service.get_all(department_id=department_id)
     total = len(teams)
     paginated = teams[skip: skip + limit]
     return APIResponse(

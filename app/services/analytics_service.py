@@ -553,6 +553,7 @@ class AnalyticsService:
         return result
 
     def get_calendar_events(self, from_date: date, to_date: date) -> list[dict[str, Any]]:
+        # DEPRECATED: Use CalendarService.get_events() via GET /api/v1/calendar/events
         events = []
 
         tasks = self.db.execute(

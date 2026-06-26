@@ -37,6 +37,11 @@ class ProjectService:
             pm = project.project_manager
             pm_name = f"{pm.first_name} {pm.last_name}"
 
+        dept_name = dept_code = None
+        if hasattr(project, "department") and project.department:
+            dept_name = project.department.name
+            dept_code = project.department.code
+
         data = {
             "id": project.id,
             "part_number": project.project_code,
@@ -47,6 +52,9 @@ class ProjectService:
             "client_name": client_name,
             "project_manager_id": project.project_manager_id,
             "project_manager_name": pm_name,
+            "department_id": project.department_id,
+            "department_name": dept_name,
+            "department_code": dept_code,
             "status": project.status,
             "priority": project.priority,
             "is_billable": project.is_billable,
@@ -140,6 +148,14 @@ class ProjectService:
         if not getattr(client, "is_active", True):
             raise ValueError(f"Client with id {data.client_id} is not active")
 
+        # Validate department exists and is active
+        from app.models.department import Department
+        dept = self.db.get(Department, data.department_id)
+        if not dept:
+            raise ValueError(f"Department with id {data.department_id} not found")
+        if not getattr(dept, "is_active", True):
+            raise ValueError(f"Department with id {data.department_id} is not active")
+
         # Validate project_code (mapped from part_number) uniqueness
         if self.repo.get_by_code(data.part_number):
             raise ValueError(f"Project with Part Number '{data.part_number}' already exists")
@@ -209,6 +225,19 @@ class ProjectService:
                 raise ValueError(
                     f"Project with Part Number '{update_data['project_code']}' already exists"
                 )
+
+        # Validate department if changed
+        if "department_id" in update_data and update_data["department_id"] != project.department_id:
+            from app.models.department import Department
+            dept = self.db.get(Department, update_data["department_id"])
+            if not dept:
+                raise ValueError(f"Department with id {update_data['department_id']} not found")
+            if not getattr(dept, "is_active", True):
+                raise ValueError(f"Department with id {update_data['department_id']} is not active")
+            
+            task_count, _ = self._get_task_counts(id)
+            if task_count > 0:
+                raise ValueError("Cannot change the department of a project that has tasks created under it.")
 
         # Validate client if changed
         if "client_id" in update_data:
@@ -470,6 +499,65 @@ class ProjectService:
         contract = float(project.contract_hours) if project.contract_hours is not None else None
         hours_remaining = max(0.0, estimated - actual_hours) if estimated else None
 
+        # Get team statistics for this project
+        from app.models.team import Team
+        from app.models.task import Task
+        
+        stmt = (
+            select(
+                Team.team_name,
+                func.count(Task.id).label("task_count"),
+                func.sum(Task.estimated_hours).label("planned_hours"),
+                func.sum(Task.actual_hours).label("actual_hours"),
+                func.sum(Task.progress * Task.estimated_hours).label("completed_hours"),
+            )
+            .join(Task, Task.team_id == Team.id)
+            .where(and_(Task.project_id == id, Task.is_active == True))
+            .group_by(Team.id, Team.team_name)
+            .order_by(Team.team_name)
+        )
+        rows = self.db.execute(stmt).all()
+        
+        team_stats = []
+        teams_involved = []
+        for r in rows:
+            planned_hours = float(r.planned_hours or 0.0)
+            completed_hours = float(r.completed_hours or 0.0)
+            
+            # Count open tasks for this team in this project
+            open_count = self.db.scalar(
+                select(func.count(Task.id))
+                .join(Team, Task.team_id == Team.id)
+                .where(
+                    and_(
+                        Task.project_id == id,
+                        Task.is_active == True,
+                        Team.team_name == r.team_name,
+                        Task.status != "COMPLETED",
+                        Task.status != "CANCELLED"
+                    )
+                )
+            ) or 0
+            
+            if planned_hours > 0:
+                completion_pct = round((completed_hours / planned_hours) * 100.0, 1)
+            else:
+                completion_pct = 100.0 if open_count == 0 else 0.0
+                
+            remaining_hours = max(0.0, planned_hours - completed_hours)
+            
+            stats_dict = {
+                "team_name": r.team_name,
+                "task_count": r.task_count,
+                "planned_hours": round(planned_hours, 1),
+                "actual_hours": round(float(r.actual_hours or 0.0), 1),
+                "remaining_hours": round(remaining_hours, 1),
+                "completed_hours": round(completed_hours, 1),
+                "completion_pct": completion_pct,
+            }
+            team_stats.append(stats_dict)
+            teams_involved.append(r.team_name)
+
         return {
             "project_id": str(id),
             "project_code": project.project_code,
@@ -485,6 +573,9 @@ class ProjectService:
             "contract_hours": contract,
             "actual_hours": actual_hours,
             "hours_remaining": hours_remaining,
+            "teams_involved": teams_involved,
+            "total_teams_involved": len(teams_involved),
+            "team_stats": team_stats,
         }
 
     def recalculate_all(self) -> dict:

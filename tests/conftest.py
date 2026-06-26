@@ -186,6 +186,7 @@ def mock_db():
     db.scalars.return_value = MagicMock()
     db.scalars.return_value.unique.return_value = MagicMock()
     db.scalars.return_value.unique.return_value.all.return_value = []
+    db.scalars.return_value.all = db.scalars.return_value.unique.return_value.all
     db.scalars.return_value.first.return_value = None
     db.get.return_value = None
 
@@ -396,6 +397,129 @@ def rework_service(mock_db):
     return ReworkService(db=mock_db, current_user_id=TEST_EMPLOYEE_ID)
 
 
+# ── Calendar / Holiday Fixtures ────────────────────────────────────────────────
+
+
+def make_mock_calendar_settings(
+    weekend_days: str = "SUN",
+    working_days: str = "MON,TUE,WED,THU,FRI,SAT",
+    working_hours_per_day: float = 8.0,
+    default_daily_hours: float = 8.0,
+    office_start_time: str = "09:00",
+    office_end_time: str = "18:00",
+) -> MagicMock:
+    from app.models.calendar_settings import CalendarSettings
+    s = MagicMock(spec=CalendarSettings)
+    s.weekend_days = weekend_days
+    s.working_days = working_days
+    s.working_hours_per_day = working_hours_per_day
+    s.default_daily_hours = default_daily_hours
+    s.office_start_time = office_start_time
+    s.office_end_time = office_end_time
+    return s
+
+
+def make_mock_holiday(
+    id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+    name: str = "Test Holiday",
+    date_val: date = date(2026, 8, 15),
+    holiday_type: str = "PUBLIC",
+    description: str | None = "Test description",
+    is_active: bool = True,
+    created_by: UUID | None = TEST_EMPLOYEE_ID,
+    updated_by: UUID | None = None,
+) -> MagicMock:
+    from app.models.holiday import Holiday
+    h = MagicMock(spec=Holiday)
+    h.id = id
+    h.name = name
+    h.date = date_val
+    h.holiday_type = holiday_type
+    h.description = description
+    h.is_active = is_active
+    h.created_by = created_by
+    h.updated_by = updated_by
+    h.created_at = datetime.now(timezone.utc)
+    h.updated_at = datetime.now(timezone.utc)
+    return h
+
+
+def make_mock_company_event(
+    id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+    title: str = "Company Event",
+    event_type: str = "COMPANY_EVENT",
+    start_date: date = date(2026, 7, 15),
+    end_date: date | None = None,
+    is_all_day: bool = True,
+    color: str = "#8B5CF6",
+    is_active: bool = True,
+) -> MagicMock:
+    from app.models.calendar_event import CalendarEvent
+    e = MagicMock(spec=CalendarEvent)
+    e.id = id
+    e.title = title
+    e.event_type = event_type
+    e.event_subtype = None
+    e.start_date = start_date
+    e.end_date = end_date
+    e.start_time = None
+    e.end_time = None
+    e.is_all_day = is_all_day
+    e.reference_type = None
+    e.reference_id = None
+    e.color = color
+    e.text_color = "#ffffff"
+    e.is_active = is_active
+    e.created_by = TEST_EMPLOYEE_ID
+    e.created_at = datetime.now(timezone.utc)
+    e.updated_at = datetime.now(timezone.utc)
+    return e
+
+
+def make_mock_project_extended(
+    id=TEST_PROJECT_ID,
+    name: str = "Test Project",
+    project_code: str = "PROJ-001",
+    planned_start_date: date | None = date(2026, 6, 1),
+    planned_end_date: date | None = date(2026, 8, 30),
+    status: str = "IN_PROGRESS",
+    is_active: bool = True,
+) -> MagicMock:
+    p = MagicMock()
+    p.id = id
+    p.name = name
+    p.project_code = project_code
+    p.planned_start_date = planned_start_date
+    p.planned_end_date = planned_end_date
+    p.status = status
+    p.is_active = is_active
+    return p
+
+
+@pytest.fixture
+def holiday_service(mock_db):
+    from app.services.holiday_service import HolidayService
+    return HolidayService(db=mock_db, current_user_id=TEST_EMPLOYEE_ID)
+
+
+@pytest.fixture
+def company_event_service(mock_db):
+    from app.services.company_event_service import CompanyEventService
+    return CompanyEventService(db=mock_db, current_user_id=TEST_EMPLOYEE_ID)
+
+
+@pytest.fixture
+def calendar_service(mock_db):
+    from app.services.calendar_service import CalendarService
+    return CalendarService(db=mock_db, current_user_id=TEST_EMPLOYEE_ID)
+
+
+@pytest.fixture
+def dashboard_widget_service(mock_db):
+    from app.services.dashboard_widget_service import DashboardWidgetService
+    return DashboardWidgetService(db=mock_db, current_user_id=TEST_EMPLOYEE_ID)
+
+
 # ── App / Client Fixtures for API Tests ────────────────────────────────────────
 
 
@@ -426,7 +550,12 @@ def _make_test_app() -> FastAPI:
     mock_employee.employee_roles = [mock_emp_role]
 
     test_db = MagicMock()
-    test_db.scalar.return_value = None
+    def test_db_scalar(query):
+        q_str = str(query).lower()
+        if "calendar_settings" in q_str:
+            return make_mock_calendar_settings()
+        return None
+    test_db.scalar.side_effect = test_db_scalar
     test_db.scalars.return_value = MagicMock()
     test_db.scalars.return_value.unique.return_value = MagicMock()
     test_db.scalars.return_value.unique.return_value.all.return_value = []

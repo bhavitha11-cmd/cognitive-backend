@@ -28,6 +28,8 @@ from uuid import UUID
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from app.services.audit_service import AuditService
+
 logger = logging.getLogger(__name__)
 
 # ── Status priority order ────────────────────────────────────────────────────
