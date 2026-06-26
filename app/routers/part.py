@@ -49,6 +49,7 @@ def get_part_project_details(part_number: str, db: Session = Depends(get_db)):
         "packageName": project.name,
         "clientName": client_name,
         "projectManager": pm_name,
+        "departmentId": str(project.department_id) if project.department_id else None,
         "status": project.status,
         "priority": project.priority,
         "plannedEndDate": project.planned_end_date.isoformat() if project.planned_end_date else None,

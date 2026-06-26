@@ -7,6 +7,7 @@ VALID_MODULES = {
     "HR", "Clients", "Finance", "Projects",
     "Inventory", "Settings", "Reports", "Timesheets", "Tasks",
     "Attendance", "Leave", "Analytics",
+    "Holiday", "Calendar", "CompanyEvent", "Dashboard", "CalendarSettings",
 }
 
 VALID_ACCESS_LEVELS = {"FULL", "MANAGED", "TEAM", "SELF"}

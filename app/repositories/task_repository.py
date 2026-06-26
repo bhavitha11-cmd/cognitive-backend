@@ -13,7 +13,10 @@ from app.repositories.base import BaseRepository
 class TaskRepository(BaseRepository):
 
     def get_by_id(self, id: UUID, load_assignments: bool = False) -> Task | None:
-        stmt = select(Task).where(Task.id == id, Task.is_active == True)  # noqa: E712
+        stmt = select(Task).options(
+            joinedload(Task.project),
+            joinedload(Task.team),
+        ).where(Task.id == id, Task.is_active == True)  # noqa: E712
         if load_assignments:
             stmt = stmt.options(
                 selectinload(Task.assignments).joinedload(TaskAssignment.employee),
@@ -40,6 +43,8 @@ class TaskRepository(BaseRepository):
         is_active: bool | None = True,
     ) -> list[Task]:
         stmt = select(Task).options(
+            joinedload(Task.project),
+            joinedload(Task.team),
             selectinload(Task.assignments).joinedload(TaskAssignment.employee),
             selectinload(Task.assignments).joinedload(TaskAssignment.assigner),
         )
@@ -175,6 +180,8 @@ class TaskRepository(BaseRepository):
         is_active: bool | None = True,
     ) -> list[Task]:
         stmt = select(Task).options(
+            joinedload(Task.project),
+            joinedload(Task.team),
             selectinload(Task.assignments).joinedload(TaskAssignment.employee),
             selectinload(Task.assignments).joinedload(TaskAssignment.assigner),
         )

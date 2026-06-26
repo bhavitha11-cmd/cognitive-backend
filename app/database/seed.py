@@ -2,10 +2,12 @@ import uuid
 import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy import update
 from app.models.role import Role
 from app.models.employee import Employee
 from app.models.employee_role import EmployeeRole
 from app.models.scope_of_work import ScopeOfWork
+from app.schemas.task_template import TaskTemplateCreate
 from app.core.security import get_password_hash
 from app.core.config import settings
 
@@ -214,19 +216,237 @@ def seed_leave_types(db: Session):
 
 
 def seed_attendance_rule(db: Session):
-    """Seed a single default attendance rule if none exist."""
+    """Seed a single default attendance rule if none exist, updating with defaults if row exists."""
     from app.models.attendance_rule import AttendanceRule
 
-    exists = db.scalar(select(AttendanceRule))
-    if not exists:
+    rule = db.scalar(select(AttendanceRule))
+    if not rule:
         rule = AttendanceRule(
             id=uuid.uuid4(),
-            office_start_time="09:00",
-            office_end_time="18:00",
+            office_start_time="08:00",
+            office_end_time="20:00",
             half_day_hours=4.0,
             late_mark_after_minutes=15,
             work_days="MON,TUE,WED,THU,FRI",
+            required_productive_hours=8.0,
+            overtime_threshold_hours=9.0,
+            max_break_minutes=60,
+            min_break_minutes=0,
         )
         db.add(rule)
         db.commit()
         logger.info("[Seed] Created default attendance rule.")
+    else:
+        # Update existing rule with default values for new columns if they are not set (which is handled by server_default but good to ensure)
+        dirty = False
+        if rule.office_start_time == "09:00":
+            rule.office_start_time = "08:00"
+            dirty = True
+        if rule.office_end_time == "18:00":
+            rule.office_end_time = "20:00"
+            dirty = True
+        if getattr(rule, "required_productive_hours", None) is None:
+            rule.required_productive_hours = 8.0
+            dirty = True
+        if getattr(rule, "overtime_threshold_hours", None) is None:
+            rule.overtime_threshold_hours = 9.0
+            dirty = True
+        if getattr(rule, "max_break_minutes", None) is None:
+            rule.max_break_minutes = 60
+            dirty = True
+        if getattr(rule, "min_break_minutes", None) is None:
+            rule.min_break_minutes = 0
+            dirty = True
+        if dirty:
+            db.add(rule)
+            db.commit()
+            logger.info("[Seed] Updated pre-existing default attendance rule fields.")
+
+
+def seed_calendar_settings(db: Session):
+    from app.models.calendar_settings import CalendarSettings
+
+    exists = db.scalar(select(CalendarSettings))
+    if not exists:
+        settings = CalendarSettings(
+            id=uuid.uuid4(),
+            working_days="MON,TUE,WED,THU,FRI,SAT",
+            weekend_days="SUN",
+            office_start_time="09:00",
+            office_end_time="18:00",
+            default_daily_hours=8.0,
+            working_hours_per_day=8.0,
+        )
+        db.add(settings)
+        db.commit()
+        logger.info("[Seed] Created default calendar settings.")
+
+
+def seed_task_template_permissions(db: Session):
+    from app.models.role_permission import RolePermission
+    from app.models.role import Role
+
+    admin_role = db.scalar(select(Role).where(Role.role_code == "ADMIN"))
+    if not admin_role:
+        logger.warning("[Seed] ADMIN role not found, skipping task template permissions.")
+        return
+
+    existing = db.scalar(
+        select(RolePermission).where(
+            RolePermission.role_id == admin_role.id,
+            RolePermission.module_name == "TaskTemplate",
+        )
+    )
+    if not existing:
+        perm = RolePermission(
+            id=uuid.uuid4(),
+            role_id=admin_role.id,
+            module_name="TaskTemplate",
+            can_view=True,
+            can_create=True,
+            can_edit=True,
+            can_delete=True,
+            can_approve=False,
+            can_export=False,
+        )
+        db.add(perm)
+        db.commit()
+        logger.info("[Seed] Created TaskTemplate permission for ADMIN role.")
+    else:
+        logger.info("[Seed] TaskTemplate permission already present, skipping.")
+
+    # Seed some default task titles
+    from app.models.task_template import TaskTemplate
+    existing_titles = {
+        row[0].lower(): row[0]
+        for row in db.execute(select(TaskTemplate.title)).all()
+    }
+
+    DEFAULT_TITLES = [
+        "3D Modeling",
+        "Assembly Modeling",
+        "Drawing Creation",
+        "GD&T",
+        "Simulation",
+        "Design Review",
+        "Customer Review",
+        "BOM Preparation",
+        "Manufacturing Drawing",
+        "Release Drawing",
+        "Circuit Design",
+        "PCB Layout",
+        "Harness Design",
+        "Requirement Analysis",
+        "Concept Design",
+        "Detail Engineering",
+        "FEA Analysis",
+        "CFD Analysis",
+        "Material Selection",
+        "Cost Estimation",
+    ]
+
+    from app.services.task_template_service import TaskTemplateService
+    svc = TaskTemplateService(db)
+    created = 0
+    for title in DEFAULT_TITLES:
+        if title.lower() not in existing_titles:
+            svc.create(TaskTemplateCreate(title=title))
+            created += 1
+
+    if created:
+        logger.info(f"[Seed] Created {created} default task templates.")
+    else:
+        logger.info("[Seed] Default task templates already present, skipping.")
+
+    # Ensure we have a consistent admin for the audit fields if none set
+    admin_emp = db.scalar(select(Employee).where(Employee.username == "admin"))
+    if admin_emp:
+        db.execute(
+            update(TaskTemplate).where(TaskTemplate.created_by.is_(None)).values(created_by=admin_emp.id)
+        )
+        db.commit()
+
+
+def seed_calendar_permissions(db: Session):
+    from app.models.role_permission import RolePermission
+    from app.models.role import Role
+
+    admin_role = db.scalar(select(Role).where(Role.role_code == "ADMIN"))
+    if not admin_role:
+        logger.warning("[Seed] ADMIN role not found, skipping calendar permissions.")
+        return
+
+    PERMISSIONS = [
+        ("Holiday", True, True, True, True, False, False),
+        ("Calendar", True, False, False, False, False, False),
+        ("CompanyEvent", True, True, True, True, False, False),
+        ("Dashboard", True, False, False, False, False, False),
+        ("CalendarSettings", True, True, True, True, False, False),
+    ]
+
+    created = 0
+    for module, can_view, can_create, can_edit, can_delete, can_approve, can_export in PERMISSIONS:
+        existing = db.scalar(
+            select(RolePermission).where(
+                RolePermission.role_id == admin_role.id,
+                RolePermission.module_name == module,
+            )
+        )
+        if not existing:
+            perm = RolePermission(
+                id=uuid.uuid4(),
+                role_id=admin_role.id,
+                module_name=module,
+                can_view=can_view,
+                can_create=can_create,
+                can_edit=can_edit,
+                can_delete=can_delete,
+                can_approve=can_approve,
+                can_export=can_export,
+            )
+            db.add(perm)
+            created += 1
+
+    if created:
+        db.commit()
+        logger.info(f"[Seed] Created {created} calendar permissions for ADMIN role.")
+    else:
+        logger.info("[Seed] Calendar permissions already present, skipping.")
+
+
+def seed_idle_reasons(db: Session):
+    from app.models.idle_reason_master import IdleReasonMaster
+    
+    DEFAULT_REASONS = [
+        ("WAITING_REVIEW", "Waiting for Review", "Waiting for code or document review from colleagues/leads", 1, "#f59e0b"),
+        ("MEETING", "Meeting", "Internal or project synchronization meeting", 2, "#3b82f6"),
+        ("MACHINE_ISSUE", "Machine Issue", "Hardware, network, or electrical issues preventing engineering work", 3, "#ef4444"),
+        ("MANAGER_DISCUSSION", "Manager Discussion", "Discussion or 1-on-1 with manager", 4, "#8b5cf6"),
+        ("TRAINING", "Training", "Attending training sessions or tutorials", 5, "#10b981"),
+        ("SYSTEM_ISSUE", "System Issue", "Software licenses, CAD/CAM tools, or VPN access issues", 6, "#ec4899"),
+        ("CUSTOMER_CALL", "Customer Call", "Direct calls, presentations, or chats with clients", 7, "#06b6d4"),
+        ("DOCUMENTATION", "Documentation", "Project documentation, timesheet management, or reports", 8, "#6b7280"),
+        ("OTHER", "Other", "Any other reasons not covered by standard options", 9, "#9ca3af"),
+    ]
+    
+    created = 0
+    for code, name, desc, order, color in DEFAULT_REASONS:
+        existing = db.scalar(select(IdleReasonMaster).where(IdleReasonMaster.code == code))
+        if not existing:
+            reason = IdleReasonMaster(
+                id=uuid.uuid4(),
+                code=code,
+                name=name,
+                description=desc,
+                display_order=order,
+                color=color,
+                is_active=True
+            )
+            db.add(reason)
+            created += 1
+            
+    if created:
+        db.commit()
+        logger.info(f"[Seed] Created {created} default idle reasons.")
+    else:
+        logger.info("[Seed] Default idle reasons already present, skipping.")

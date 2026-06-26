@@ -28,6 +28,11 @@ from app.models.task_work_session import TaskWorkSession
 from app.models.employee_break import EmployeeBreak
 from app.models.task_rework_history import TaskReworkHistory
 from app.models.holiday import Holiday
+from app.models.calendar_settings import CalendarSettings
+from app.models.calendar_event import CalendarEvent
+from app.models.task_template import TaskTemplate
+from app.models.idle_reason_master import IdleReasonMaster
+from app.models.idle_classification import IdleClassification
 
 __all__ = [
     "Role",
@@ -57,4 +62,9 @@ __all__ = [
     "EmployeeSchedule",
     "TaskDependency",
     "Holiday",
+    "CalendarSettings",
+    "CalendarEvent",
+    "TaskTemplate",
+    "IdleReasonMaster",
+    "IdleClassification",
 ]

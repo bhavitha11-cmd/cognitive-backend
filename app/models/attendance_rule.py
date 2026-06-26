@@ -31,6 +31,18 @@ class AttendanceRule(Base):
     work_days: Mapped[str] = mapped_column(
         String(50), default="MON,TUE,WED,THU,FRI", nullable=False
     )
+    required_productive_hours: Mapped[float] = mapped_column(
+        Numeric(4, 2), default=8.0, nullable=False
+    )
+    overtime_threshold_hours: Mapped[float] = mapped_column(
+        Numeric(4, 2), default=9.0, nullable=False
+    )
+    max_break_minutes: Mapped[int] = mapped_column(
+        Integer, default=60, nullable=False
+    )
+    min_break_minutes: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

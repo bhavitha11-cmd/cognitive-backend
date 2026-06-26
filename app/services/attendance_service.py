@@ -18,8 +18,6 @@ from app.schemas.attendance import (
 )
 from app.services.audit_service import AuditService
 
-# Standard full-day work hours — overtime accrues beyond this threshold.
-STANDARD_WORK_HOURS = 9.0
 
 
 def _now_utc() -> datetime:
@@ -114,6 +112,14 @@ class AttendanceService:
         try:
             self.db.commit()
             self.db.refresh(rule)
+            
+            # Clear productivity policy resolver cache
+            try:
+                from app.services.productivity.policy_resolver import PolicyResolver
+                PolicyResolver.clear_cache()
+            except ImportError:
+                pass
+
             AuditService.log(
                 self.db,
                 "attendance_rule",
@@ -165,7 +171,7 @@ class AttendanceService:
             delta = record.clock_out - record.clock_in
             total = delta.total_seconds() / 3600.0
             record.total_hours = round(max(0.0, total), 2)
-            record.overtime_hours = round(max(0.0, total - STANDARD_WORK_HOURS), 2)
+            record.overtime_hours = round(max(0.0, total - float(rule.overtime_threshold_hours)), 2)
         else:
             record.total_hours = 0.0
             record.overtime_hours = 0.0

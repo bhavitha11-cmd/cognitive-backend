@@ -22,8 +22,8 @@ class TeamService:
 
     # ── Team CRUD ──────────────────────────────────────────────────────────────
 
-    def get_all(self) -> list[TeamResponse]:
-        teams = self.repo.get_all()
+    def get_all(self, department_id: UUID | None = None) -> list[TeamResponse]:
+        teams = self.repo.get_all(department_id=department_id)
         result = []
         for t in teams:
             active_members = [m for m in t.members if m.left_at is None]

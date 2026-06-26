@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # Environment Settings
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
+    LOG_LEVEL: str = ""
 
     # Database Settings
     DATABASE_URL: str

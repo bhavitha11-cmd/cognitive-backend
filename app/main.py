@@ -1,5 +1,6 @@
 import logging
 import re
+import sys
 import time
 import traceback
 from fastapi import FastAPI, Request, Response
@@ -29,14 +30,53 @@ from app.routers.analytics import router as analytics_router
 from app.routers.work_session import router as work_session_router
 from app.routers.employee_break import router as employee_break_router
 from app.routers.task_rework import router as task_rework_router
+from app.routers.holiday import router as holiday_router
+from app.routers.calendar_settings import router as calendar_settings_router
+from app.routers.company_event import router as company_event_router
+from app.routers.calendar import router as calendar_router
+from app.routers.dashboard_widget import router as dashboard_widget_router
+from app.routers.task_template import router as task_template_router
+from app.routers.productivity import router as productivity_router
 from app.middleware.audit_context import set_audit_context
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+# ── Logging configuration ────────────────────────────────────────────────────
+# Ensures ALL loggers (uvicorn.*, __name__, alembic, sqlalchemy, etc.) produce
+# visible, consistently formatted output instead of relying on uvicorn's defaults.
+# This is critical because many services use logging.getLogger(__name__) which
+# would otherwise inherit root logger's default WARNING level and silently drop
+# INFO messages.
+
+LOG_LEVEL = logging.getLevelName(settings.LOG_LEVEL.upper()) if settings.LOG_LEVEL else (logging.DEBUG if settings.DEBUG else logging.INFO)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(LOG_LEVEL)
+
+# Replace any pre-existing handlers (from uvicorn) with our own for consistent format
+root_logger.handlers.clear()
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(LOG_LEVEL)
+console_handler.setFormatter(logging.Formatter(
+    "%(asctime)s  %(levelname)-8s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+root_logger.addHandler(console_handler)
+
+# Make uvicorn's loggers use our root handler for consistent format
+for log_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.default"):
+    uvicorn_logger = logging.getLogger(log_name)
+    uvicorn_logger.handlers.clear()
+    uvicorn_logger.setLevel(LOG_LEVEL)
+    uvicorn_logger.propagate = True
+
+# Keep SQLAlchemy engine logs quiet unless DB_ECHO is on
+logging.getLogger("sqlalchemy.engine").setLevel(logging.DEBUG if settings.DB_ECHO else logging.WARNING)
+
 limiter = Limiter(key_func=get_remote_address)
 
-logger = logging.getLogger("uvicorn.error")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.PROJECT_NAME, version=settings.PROJECT_VERSION, debug=settings.DEBUG)
 app.state.limiter = limiter
@@ -147,13 +187,26 @@ def on_startup():
 
     logger.info("[Database] Running startup seeding...")
     from app.database.session import SessionLocal
-    from app.database.seed import seed_default_admin, seed_scope_of_work, seed_leave_types, seed_attendance_rule
+    from app.database.seed import (
+        seed_default_admin,
+        seed_scope_of_work,
+        seed_leave_types,
+        seed_attendance_rule,
+        seed_calendar_settings,
+        seed_calendar_permissions,
+        seed_task_template_permissions,
+        seed_idle_reasons,
+    )
     db = SessionLocal()
     try:
         seed_default_admin(db)
         seed_scope_of_work(db)
         seed_leave_types(db)
         seed_attendance_rule(db)
+        seed_calendar_settings(db)
+        seed_calendar_permissions(db)
+        seed_task_template_permissions(db)
+        seed_idle_reasons(db)
         logger.info("[Database] Startup seeding completed successfully.")
     except Exception as e:
         logger.error(f"[Database] Seeding failed: {e}")
@@ -200,6 +253,13 @@ app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(work_session_router, prefix="/api/v1")
 app.include_router(employee_break_router, prefix="/api/v1")
 app.include_router(task_rework_router, prefix="/api/v1")
+app.include_router(holiday_router, prefix="/api/v1")
+app.include_router(calendar_settings_router, prefix="/api/v1")
+app.include_router(company_event_router, prefix="/api/v1")
+app.include_router(calendar_router, prefix="/api/v1")
+app.include_router(dashboard_widget_router, prefix="/api/v1")
+app.include_router(task_template_router, prefix="/api/v1")
+app.include_router(productivity_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["General"])

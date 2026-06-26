@@ -87,7 +87,15 @@ class TaskService:
                 f"Cannot add tasks to a project with status '{project.status}'. "
                 "Project must be Yet To Start or In Progress."
             )
-
+        # Validate team exists and matches project's department
+        from app.models.team import Team
+        team = self.db.get(Team, data.team_id)
+        if not team:
+            raise ValueError("Selected team not found")
+        if not team.is_active:
+            raise ValueError("Cannot assign tasks to an inactive team")
+        if team.department_id != project.department_id:
+            raise ValueError("Selected team must belong to the same department as the project")
         # Validate task planned dates against project boundaries
         if data.planned_end_date and hasattr(project, "planned_end_date") and project.planned_end_date:
             if data.planned_end_date > project.planned_end_date:
@@ -194,6 +202,21 @@ class TaskService:
         update_data = data.model_dump(exclude_unset=True)
         has_assignee_field = "assigned_employee_id" in update_data
         assigned_employee_id = update_data.pop("assigned_employee_id", None)
+
+        # Validate team if changed
+        if "team_id" in update_data and update_data["team_id"] != task.team_id:
+            from app.models.team import Team
+            team = self.db.get(Team, update_data["team_id"])
+            if not team:
+                raise ValueError("Selected team not found")
+            if not team.is_active:
+                raise ValueError("Cannot assign tasks to an inactive team")
+            
+            # Fetch task's project
+            from app.models.project import Project
+            project = self.db.get(Project, task.project_id)
+            if project and team.department_id != project.department_id:
+                raise ValueError("Selected team must belong to the same department as the project")
 
         # Validate task_code uniqueness within project (excluding self)
         if "task_code" in update_data and update_data["task_code"] != task.task_code:
@@ -461,6 +484,11 @@ class TaskService:
                 if a.status != "CANCELLED":
                     assignments.append(self._build_assignment_response(a))
 
+        team_name = team_code = None
+        if hasattr(task, "team") and task.team:
+            team_name = task.team.team_name
+            team_code = task.team.team_code
+
         return TaskResponse(
             id=task.id,
             task_code=task.task_code,
@@ -468,6 +496,9 @@ class TaskService:
             description=task.description,
             project_id=task.project_id,
             project_name=project_name,
+            team_id=task.team_id,
+            team_name=team_name,
+            team_code=team_code,
             parent_task_id=task.parent_task_id,
             scope_of_work_id=task.scope_of_work_id,
             scope_name=scope_name,
@@ -509,12 +540,20 @@ class TaskService:
         for a in active_assignments:
             assignments_response.append(self._build_assignment_response(a))
 
+        team_name = team_code = None
+        if hasattr(task, "team") and task.team:
+            team_name = task.team.team_name
+            team_code = task.team.team_code
+
         return TaskListResponse(
             id=task.id,
             task_code=task.task_code,
             title=task.title,
             project_id=task.project_id,
             project_name=project_name,
+            team_id=task.team_id,
+            team_name=team_name,
+            team_code=team_code,
             department_category=task.department_category,
             status=task.status,
             priority=task.priority,

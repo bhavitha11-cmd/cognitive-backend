@@ -16,6 +16,7 @@ class ProjectCreate(BaseModel):
     description: str | None = None
     client_id: uuid.UUID
     project_manager_id: uuid.UUID | None = None
+    department_id: uuid.UUID
     status: str = "Yet To Start"
     priority: str = "MEDIUM"
     is_billable: bool = True
@@ -64,6 +65,7 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
     client_id: uuid.UUID | None = None
     project_manager_id: uuid.UUID | None = None
+    department_id: uuid.UUID | None = None
     # NOTE: status, actual_start_date, actual_end_date, estimated_hours
     # are system-managed and cannot be set manually via API update.
     priority: str | None = None
@@ -109,6 +111,9 @@ class ProjectResponse(BaseModel):
     client_name: str | None = None
     project_manager_id: uuid.UUID | None = None
     project_manager_name: str | None = None
+    department_id: uuid.UUID
+    department_name: str | None = None
+    department_code: str | None = None
     status: str
     priority: str
     is_billable: bool
