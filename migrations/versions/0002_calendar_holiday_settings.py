@@ -1,7 +1,7 @@
 """Extend holidays table, create calendar_settings
 
 Revision ID: 0002_calendar_holiday_settings
-Revises: 0001_initial
+Revises: f3bfb2e8f71e
 Create Date: 2026-06-25
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "0002_calendar_holiday_settings"
-down_revision: Union[str, Sequence[str], None] = "0001_initial"
+down_revision: Union[str, Sequence[str], None] = "f3bfb2e8f71e"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

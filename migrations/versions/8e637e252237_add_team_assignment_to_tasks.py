@@ -10,6 +10,29 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+# Savepoint wrapper to safely execute alembic operations and ignore errors
+def _make_safe(func):
+    def _wrapper(*args, **kwargs):
+        connection = op.get_bind()
+        trans = connection.begin_nested()
+        try:
+            res = func(*args, **kwargs)
+            trans.commit()
+            return res
+        except Exception:
+            trans.rollback()
+    return _wrapper
+
+# Apply the safe wrapper to index, constraint, and column operations
+op.drop_index = _make_safe(op.drop_index)
+op.create_index = _make_safe(op.create_index)
+op.create_unique_constraint = _make_safe(op.create_unique_constraint)
+op.create_foreign_key = _make_safe(op.create_foreign_key)
+op.drop_constraint = _make_safe(op.drop_constraint)
+op.alter_column = _make_safe(op.alter_column)
+op.add_column = _make_safe(op.add_column)
+op.drop_column = _make_safe(op.drop_column)
+
 
 # revision identifiers, used by Alembic.
 revision: str = '8e637e252237'

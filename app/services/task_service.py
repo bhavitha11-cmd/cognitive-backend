@@ -87,15 +87,51 @@ class TaskService:
                 f"Cannot add tasks to a project with status '{project.status}'. "
                 "Project must be Yet To Start or In Progress."
             )
+
+        # Resolve/Create team automatically if department_category is provided (acts as team)
+        team_id = data.team_id
+        dept_cat = data.department_category
+
+        # Auto-set department_category from scope if scope provided and dept not set
+        if data.scope_of_work_id:
+            scope = self._get_scope(data.scope_of_work_id)
+            if scope and not dept_cat and hasattr(scope, "department_category"):
+                dept_cat = scope.department_category
+
+        if dept_cat:
+            from app.models.team import Team
+            team = self.db.scalar(
+                select(Team).where(
+                    Team.department_id == project.department_id,
+                    (Team.team_code == dept_cat) | (Team.team_name.ilike(f"%{dept_cat}%"))
+                )
+            )
+            if not team:
+                # Auto-create the team
+                team = Team(
+                    id=uuid.uuid4(),
+                    team_code=dept_cat,
+                    team_name=f"{dept_cat} Team",
+                    department_id=project.department_id,
+                    is_active=True
+                )
+                self.db.add(team)
+                self.db.flush()
+            team_id = team.id
+
+        if not team_id:
+            raise ValueError("Team could not be determined. Please specify a team or department category.")
+
         # Validate team exists and matches project's department
         from app.models.team import Team
-        team = self.db.get(Team, data.team_id)
+        team = self.db.get(Team, team_id)
         if not team:
             raise ValueError("Selected team not found")
         if not team.is_active:
             raise ValueError("Cannot assign tasks to an inactive team")
         if team.department_id != project.department_id:
             raise ValueError("Selected team must belong to the same department as the project")
+
         # Validate task planned dates against project boundaries
         if data.planned_end_date and hasattr(project, "planned_end_date") and project.planned_end_date:
             if data.planned_end_date > project.planned_end_date:
@@ -133,18 +169,9 @@ class TaskService:
                 f"Task code '{data.task_code}' already exists in this project"
             )
 
-        # Auto-set department_category from scope if scope provided and dept not set
-        dept_cat = data.department_category
-        scope_name = None
-        if data.scope_of_work_id:
-            scope = self._get_scope(data.scope_of_work_id)
-            if scope:
-                scope_name = getattr(scope, "name", None) or getattr(scope, "scope_name", None)
-                if not dept_cat and hasattr(scope, "department_category"):
-                    dept_cat = scope.department_category
-
         task_data = data.model_dump()
         assigned_employee_id = task_data.pop("assigned_employee_id", None)
+        task_data["team_id"] = team_id
         task_data["department_category"] = dept_cat
         if self.current_user_id:
             task_data["created_by"] = self.current_user_id
@@ -202,6 +229,31 @@ class TaskService:
         update_data = data.model_dump(exclude_unset=True)
         has_assignee_field = "assigned_employee_id" in update_data
         assigned_employee_id = update_data.pop("assigned_employee_id", None)
+
+        # Resolve/Create team automatically if department_category is changed
+        dept_cat = update_data.get("department_category")
+        if dept_cat:
+            from app.models.project import Project
+            project = self.db.get(Project, task.project_id)
+            if project:
+                from app.models.team import Team
+                team = self.db.scalar(
+                    select(Team).where(
+                        Team.department_id == project.department_id,
+                        (Team.team_code == dept_cat) | (Team.team_name.ilike(f"%{dept_cat}%"))
+                    )
+                )
+                if not team:
+                    team = Team(
+                        id=uuid.uuid4(),
+                        team_code=dept_cat,
+                        team_name=f"{dept_cat} Team",
+                        department_id=project.department_id,
+                        is_active=True
+                    )
+                    self.db.add(team)
+                    self.db.flush()
+                update_data["team_id"] = team.id
 
         # Validate team if changed
         if "team_id" in update_data and update_data["team_id"] != task.team_id:

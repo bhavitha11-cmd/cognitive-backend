@@ -558,6 +558,29 @@ class ProjectService:
             team_stats.append(stats_dict)
             teams_involved.append(r.team_name)
 
+        # Get department statistics for this project (derived from task.department_category)
+        dept_stmt = (
+            select(
+                Task.department_category,
+                func.count(Task.id).label("task_count"),
+                func.sum(Task.estimated_hours).label("planned_hours"),
+                func.sum(Task.actual_hours).label("actual_hours"),
+            )
+            .where(and_(Task.project_id == id, Task.is_active == True, Task.department_category.isnot(None)))
+            .group_by(Task.department_category)
+            .order_by(Task.department_category)
+        )
+        dept_rows = self.db.execute(dept_stmt).all()
+        
+        department_stats = []
+        for dr in dept_rows:
+            department_stats.append({
+                "department_category": dr.department_category,
+                "task_count": dr.task_count,
+                "planned_hours": round(float(dr.planned_hours or 0.0), 1),
+                "actual_hours": round(float(dr.actual_hours or 0.0), 1),
+            })
+
         return {
             "project_id": str(id),
             "project_code": project.project_code,
@@ -576,6 +599,7 @@ class ProjectService:
             "teams_involved": teams_involved,
             "total_teams_involved": len(teams_involved),
             "team_stats": team_stats,
+            "department_stats": department_stats,
         }
 
     def recalculate_all(self) -> dict:
