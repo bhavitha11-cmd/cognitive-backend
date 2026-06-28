@@ -8,6 +8,7 @@ VALID_MODULES = {
     "Inventory", "Settings", "Reports", "Timesheets", "Tasks",
     "Attendance", "Leave", "Analytics",
     "Holiday", "Calendar", "CompanyEvent", "Dashboard", "CalendarSettings",
+    "TaskTemplate",
 }
 
 VALID_ACCESS_LEVELS = {"FULL", "MANAGED", "TEAM", "SELF"}

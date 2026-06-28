@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.holiday import Holiday
 from app.schemas.holiday import HolidayCreate, HolidayResponse, HolidayUpdate
 from app.services.audit_service import AuditService
-from app.services.recalculation_engine import RecalculationEngine
+from app.services.calendar_service import CalendarService
 
 
 class HolidayService:
@@ -76,6 +76,7 @@ class HolidayService:
             date=data.date,
             holiday_type=data.holiday_type,
             description=data.description,
+            affects_working_days=data.affects_working_days if data.affects_working_days is not None else True,
             is_active=True,
             created_by=self.current_user_id,
         )
@@ -90,10 +91,11 @@ class HolidayService:
                 "name": holiday.name,
                 "date": str(holiday.date),
                 "holiday_type": holiday.holiday_type,
+                "affects_working_days": holiday.affects_working_days,
             },
         )
 
-        RecalculationEngine.trigger(holiday.id, "CREATE", self.db)
+        CalendarService.trigger_holiday_recalculation(self.db, holiday.id, "CREATE")
 
         return HolidayResponse.model_validate(holiday)
 
@@ -107,6 +109,7 @@ class HolidayService:
             "date": str(holiday.date),
             "holiday_type": holiday.holiday_type,
             "is_active": holiday.is_active,
+            "affects_working_days": holiday.affects_working_days,
         }
 
         update_data = data.model_dump(exclude_unset=True)
@@ -135,6 +138,7 @@ class HolidayService:
             "date": str(holiday.date),
             "holiday_type": holiday.holiday_type,
             "is_active": holiday.is_active,
+            "affects_working_days": holiday.affects_working_days,
         }
 
         AuditService.log(
@@ -145,7 +149,7 @@ class HolidayService:
         )
 
         if "date" in update_data or "is_active" in update_data:
-            RecalculationEngine.trigger(holiday.id, "UPDATE", self.db)
+            CalendarService.trigger_holiday_recalculation(self.db, holiday.id, "UPDATE")
 
         return HolidayResponse.model_validate(holiday)
 
@@ -169,7 +173,7 @@ class HolidayService:
             old_value=old_values,
         )
 
-        RecalculationEngine.trigger(holiday.id, "DELETE", self.db)
+        CalendarService.trigger_holiday_recalculation(self.db, holiday.id, "DELETE")
 
     def toggle_active(self, id: uuid.UUID) -> HolidayResponse:
         holiday = self.db.get(Holiday, id)
@@ -188,7 +192,7 @@ class HolidayService:
             new_value={"is_active": holiday.is_active},
         )
 
-        RecalculationEngine.trigger(holiday.id, action, self.db)
+        CalendarService.trigger_holiday_recalculation(self.db, holiday.id, action)
 
         return HolidayResponse.model_validate(holiday)
 

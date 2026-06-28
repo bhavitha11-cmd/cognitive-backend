@@ -33,7 +33,6 @@ def _get_service(
 @router.get(
     "/events",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Calendar", "view"))],
 )
 def get_calendar_events(
     from_date: date = Query(...),
@@ -53,7 +52,6 @@ def get_calendar_events(
 @router.get(
     "/working-days",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Calendar", "view"))],
 )
 def count_working_days(
     start: date = Query(...),
@@ -71,7 +69,6 @@ def count_working_days(
 @router.get(
     "/end-date",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Calendar", "view"))],
 )
 def calculate_end_date(
     start: date = Query(...),
@@ -89,7 +86,6 @@ def calculate_end_date(
 @router.get(
     "/check-working-day",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Calendar", "view"))],
 )
 def check_working_day(
     date_param: date = Query(..., alias="date"),

@@ -7,7 +7,10 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 
-VALID_HOLIDAY_TYPES = {"PUBLIC", "COMPANY_SHUTDOWN", "SPECIAL", "OBSERVANCE"}
+VALID_HOLIDAY_TYPES = {
+    "PUBLIC", "COMPANY_SHUTDOWN", "SPECIAL", "OBSERVANCE",
+    "OPTIONAL", "COMPANY_SPECIFIC",
+}
 
 
 class HolidayCreate(BaseModel):
@@ -15,6 +18,7 @@ class HolidayCreate(BaseModel):
     date: date_type
     holiday_type: str = Field(default="PUBLIC")
     description: str | None = None
+    affects_working_days: bool | None = True
 
     @field_validator("holiday_type")
     @classmethod
@@ -31,6 +35,7 @@ class HolidayUpdate(BaseModel):
     holiday_type: str | None = None
     description: str | None = None
     is_active: bool | None = None
+    affects_working_days: bool | None = None
 
     @field_validator("holiday_type")
     @classmethod
@@ -50,6 +55,7 @@ class HolidayResponse(BaseModel):
     holiday_type: str
     description: str | None
     is_active: bool
+    affects_working_days: bool
     created_by: uuid.UUID | None
     updated_by: uuid.UUID | None
     created_at: datetime
@@ -65,5 +71,6 @@ class HolidayListResponse(BaseModel):
     holiday_type: str
     description: str | None
     is_active: bool
+    affects_working_days: bool
 
     model_config = {"from_attributes": True}

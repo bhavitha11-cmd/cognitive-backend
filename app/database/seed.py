@@ -276,6 +276,16 @@ def seed_calendar_settings(db: Session):
             office_end_time="18:00",
             default_daily_hours=8.0,
             working_hours_per_day=8.0,
+            enable_birthdays=True,
+            enable_company_events=True,
+            enable_holidays=True,
+            enable_task_events=True,
+            enable_project_events=True,
+            color_holiday="#EF4444",
+            color_birthday="#EC4899",
+            color_task="#3B82F6",
+            color_project="#10B981",
+            color_company_event="#8B5CF6",
         )
         db.add(settings)
         db.commit()
@@ -371,11 +381,6 @@ def seed_calendar_permissions(db: Session):
     from app.models.role_permission import RolePermission
     from app.models.role import Role
 
-    admin_role = db.scalar(select(Role).where(Role.role_code == "ADMIN"))
-    if not admin_role:
-        logger.warning("[Seed] ADMIN role not found, skipping calendar permissions.")
-        return
-
     PERMISSIONS = [
         ("Holiday", True, True, True, True, False, False),
         ("Calendar", True, False, False, False, False, False),
@@ -385,31 +390,37 @@ def seed_calendar_permissions(db: Session):
     ]
 
     created = 0
-    for module, can_view, can_create, can_edit, can_delete, can_approve, can_export in PERMISSIONS:
-        existing = db.scalar(
-            select(RolePermission).where(
-                RolePermission.role_id == admin_role.id,
-                RolePermission.module_name == module,
+    for role_code in ["ADMIN", "HR"]:
+        role = db.scalar(select(Role).where(Role.role_code == role_code))
+        if not role:
+            logger.warning(f"[Seed] Role {role_code} not found, skipping calendar permissions.")
+            continue
+
+        for module, can_view, can_create, can_edit, can_delete, can_approve, can_export in PERMISSIONS:
+            existing = db.scalar(
+                select(RolePermission).where(
+                    RolePermission.role_id == role.id,
+                    RolePermission.module_name == module,
+                )
             )
-        )
-        if not existing:
-            perm = RolePermission(
-                id=uuid.uuid4(),
-                role_id=admin_role.id,
-                module_name=module,
-                can_view=can_view,
-                can_create=can_create,
-                can_edit=can_edit,
-                can_delete=can_delete,
-                can_approve=can_approve,
-                can_export=can_export,
-            )
-            db.add(perm)
-            created += 1
+            if not existing:
+                perm = RolePermission(
+                    id=uuid.uuid4(),
+                    role_id=role.id,
+                    module_name=module,
+                    can_view=can_view,
+                    can_create=can_create,
+                    can_edit=can_edit,
+                    can_delete=can_delete,
+                    can_approve=can_approve,
+                    can_export=can_export,
+                )
+                db.add(perm)
+                created += 1
 
     if created:
         db.commit()
-        logger.info(f"[Seed] Created {created} calendar permissions for ADMIN role.")
+        logger.info(f"[Seed] Created {created} calendar permissions.")
     else:
         logger.info("[Seed] Calendar permissions already present, skipping.")
 

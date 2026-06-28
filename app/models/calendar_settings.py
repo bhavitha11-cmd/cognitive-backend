@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, String, func
+from sqlalchemy import DateTime, Float, String, func, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,6 +34,20 @@ class CalendarSettings(Base):
     working_hours_per_day: Mapped[float] = mapped_column(
         Float, default=8.0, nullable=False
     )
+    
+    # Feature Flags
+    enable_birthdays: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    enable_company_events: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    enable_holidays: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    enable_task_events: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    enable_project_events: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Category Colors
+    color_holiday: Mapped[str] = mapped_column(String(7), default="#EF4444", nullable=False)
+    color_birthday: Mapped[str] = mapped_column(String(7), default="#EC4899", nullable=False)
+    color_task: Mapped[str] = mapped_column(String(7), default="#3B82F6", nullable=False)
+    color_project: Mapped[str] = mapped_column(String(7), default="#10B981", nullable=False)
+    color_company_event: Mapped[str] = mapped_column(String(7), default="#8B5CF6", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

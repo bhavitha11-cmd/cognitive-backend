@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,9 +12,11 @@ from app.models.project import Project
 from app.models.task import Task
 from app.models.calendar_event import CalendarEvent
 from app.models.employee import Employee
+from app.models.calendar_settings import CalendarSettings
 from app.schemas.calendar import CalendarEventResponse
 from app.core.rbac import get_user_context, DataAccessLevel
 
+logger = logging.getLogger("uvicorn.error")
 
 _STATUS_COLORS: dict[str, str] = {
     "NOT_STARTED": "#6B7280",
@@ -35,26 +38,41 @@ class CalendarService:
         to_date: date,
         types: list[str] | None = None,
     ) -> list[CalendarEventResponse]:
+        settings = self.db.scalar(select(CalendarSettings))
+        if not settings:
+            settings = CalendarSettings(
+                enable_birthdays=True,
+                enable_company_events=True,
+                enable_holidays=True,
+                enable_task_events=True,
+                enable_project_events=True,
+                color_holiday="#EF4444",
+                color_birthday="#EC4899",
+                color_task="#3B82F6",
+                color_project="#10B981",
+                color_company_event="#8B5CF6",
+            )
+
         type_set = set(types) if types else {
             "holiday", "birthday", "task", "project", "company_event"
         }
         events: list[CalendarEventResponse] = []
 
-        if "holiday" in type_set:
-            events.extend(self._get_holiday_events(from_date, to_date))
-        if "birthday" in type_set:
-            events.extend(self._get_birthday_events(from_date, to_date))
-        if "task" in type_set:
-            events.extend(self._get_task_events(from_date, to_date))
-        if "project" in type_set:
-            events.extend(self._get_project_events(from_date, to_date))
-        if "company_event" in type_set:
-            events.extend(self._get_company_events(from_date, to_date))
+        if "holiday" in type_set and settings.enable_holidays:
+            events.extend(self._get_holiday_events(from_date, to_date, settings.color_holiday))
+        if "birthday" in type_set and settings.enable_birthdays:
+            events.extend(self._get_birthday_events(from_date, to_date, settings.color_birthday))
+        if "task" in type_set and settings.enable_task_events:
+            events.extend(self._get_task_events(from_date, to_date, settings.color_task))
+        if "project" in type_set and settings.enable_project_events:
+            events.extend(self._get_project_events(from_date, to_date, settings.color_project))
+        if "company_event" in type_set and settings.enable_company_events:
+            events.extend(self._get_company_events(from_date, to_date, settings.color_company_event))
 
         events.sort(key=lambda e: e.start)
         return events
 
-    def _get_holiday_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
+    def _get_holiday_events(self, from_date: date, to_date: date, color: str) -> list[CalendarEventResponse]:
         holidays = self.db.scalars(
             select(Holiday).where(
                 Holiday.date.between(from_date, to_date),
@@ -67,15 +85,15 @@ class CalendarService:
                 title=h.name,
                 start=h.date.isoformat(),
                 allDay=True,
-                backgroundColor="#EF4444",
-                borderColor="#EF4444",
+                backgroundColor=color,
+                borderColor=color,
                 textColor="#ffffff",
                 extendedProps={"type": "holiday", "holiday_type": h.holiday_type},
             )
             for h in holidays
         ]
 
-    def _get_birthday_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
+    def _get_birthday_events(self, from_date: date, to_date: date, color: str) -> list[CalendarEventResponse]:
         employees = self.db.scalars(
             select(Employee).where(
                 Employee.is_active == True,
@@ -99,15 +117,15 @@ class CalendarService:
                         title=f"{emp.first_name}'s Birthday",
                         start=bday_this_year.isoformat(),
                         allDay=True,
-                        backgroundColor="#EC4899",
-                        borderColor="#EC4899",
+                        backgroundColor=color,
+                        borderColor=color,
                         textColor="#ffffff",
                         extendedProps={"type": "birthday", "employee_name": emp.first_name},
                     )
                 )
         return events
 
-    def _get_task_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
+    def _get_task_events(self, from_date: date, to_date: date, color: str) -> list[CalendarEventResponse]:
         tasks = self.db.scalars(
             select(Task).where(
                 Task.planned_delivery_date.between(from_date, to_date),
@@ -124,14 +142,15 @@ class CalendarService:
             if not t.planned_delivery_date:
                 continue
             is_overdue = t.planned_delivery_date < date.today()
+            task_color = color or _STATUS_COLORS.get(t.status, "#6B7280")
             events.append(
                 CalendarEventResponse(
                     id=f"task-{t.id}",
                     title=f"[{t.task_code}] {t.title[:40]}",
                     start=t.planned_delivery_date.isoformat(),
                     allDay=True,
-                    backgroundColor=_STATUS_COLORS.get(t.status, "#6B7280"),
-                    borderColor=_STATUS_COLORS.get(t.status, "#6B7280"),
+                    backgroundColor=task_color,
+                    borderColor=task_color,
                     textColor="#ffffff",
                     extendedProps={
                         "type": "task",
@@ -143,7 +162,7 @@ class CalendarService:
             )
         return events
 
-    def _get_project_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
+    def _get_project_events(self, from_date: date, to_date: date, color: str) -> list[CalendarEventResponse]:
         projects = self.db.scalars(
             select(Project).where(
                 Project.is_active == True,
@@ -163,8 +182,8 @@ class CalendarService:
                         title=f"[Start] {p.name[:40]}",
                         start=p.planned_start_date.isoformat(),
                         allDay=True,
-                        backgroundColor="#10B981",
-                        borderColor="#10B981",
+                        backgroundColor=color,
+                        borderColor=color,
                         textColor="#ffffff",
                         extendedProps={"type": "project_start", "project_name": p.name},
                     )
@@ -177,8 +196,8 @@ class CalendarService:
                         title=f"[Due] {p.name[:40]}",
                         start=p.planned_end_date.isoformat(),
                         allDay=True,
-                        backgroundColor="#F59E0B",
-                        borderColor="#F59E0B",
+                        backgroundColor=color,
+                        borderColor=color,
                         textColor="#ffffff",
                         extendedProps={
                             "type": "project_end",
@@ -189,7 +208,7 @@ class CalendarService:
                 )
         return events
 
-    def _get_company_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
+    def _get_company_events(self, from_date: date, to_date: date, default_color: str) -> list[CalendarEventResponse]:
         events = self.db.scalars(
             select(CalendarEvent).where(
                 CalendarEvent.event_type == "COMPANY_EVENT",
@@ -204,8 +223,8 @@ class CalendarService:
                 start=e.start_date.isoformat(),
                 end=e.end_date.isoformat() if e.end_date else None,
                 allDay=e.is_all_day,
-                backgroundColor=e.color or "#8B5CF6",
-                borderColor=e.color or "#8B5CF6",
+                backgroundColor=e.color or default_color,
+                borderColor=e.color or default_color,
                 textColor=e.text_color or "#ffffff",
                 extendedProps={"type": "company_event", "event_subtype": e.event_subtype},
             )
@@ -235,3 +254,109 @@ class CalendarService:
             if member.employee_id == self.current_user_id:
                 return True
         return False
+
+    @classmethod
+    def trigger_holiday_recalculation(cls, db: Session, holiday_id: uuid.UUID, action: str) -> dict:
+        holiday = db.get(Holiday, holiday_id)
+        if not holiday:
+            return {"error": f"Holiday {holiday_id} not found"}
+
+        holiday_date = holiday.date
+        action_lower = action.lower()
+
+        is_addition = action_lower in ("create", "activate")
+        is_removal = action_lower in ("delete", "deactivate")
+        if not is_addition and not is_removal and action_lower != "update":
+            return {"message": f"No action needed for: {action}"}
+
+        from app.services.working_day_engine import WorkingDayEngine
+        if WorkingDayEngine.is_weekend(holiday_date, db):
+            logger.info(
+                f"[Recalc] Holiday '{holiday.name}' on {holiday_date} is a weekend — skipping"
+            )
+            return {"message": "Holiday falls on weekend, no recalculation needed"}
+
+        # Identify affected projects
+        project_ids = db.scalars(
+            select(Project.id).where(
+                Project.is_active == True,
+                Project.planned_start_date <= holiday_date,
+                Project.planned_end_date >= holiday_date,
+            )
+        ).all()
+
+        # Identify affected tasks
+        task_ids = []
+        if project_ids:
+            task_ids = db.scalars(
+                select(Task.id).where(
+                    Task.project_id.in_(project_ids),
+                    Task.is_active == True,
+                    Task.status.notin_(["COMPLETED", "CANCELLED"]),
+                    Task.planned_start_date <= holiday_date,
+                    Task.planned_end_date >= holiday_date,
+                )
+            ).all()
+
+        results = {
+            "holiday_id": str(holiday_id),
+            "action": action,
+            "affected_projects": len(project_ids),
+            "affected_tasks": len(task_ids),
+            "project_adjustments": [],
+            "task_adjustments": [],
+        }
+
+        # Recalculate projects
+        for pid in project_ids:
+            proj = db.get(Project, pid)
+            if proj and proj.planned_end_date:
+                current_end = proj.planned_end_date
+                direction = 1 if is_addition else -1
+                candidate = current_end + timedelta(days=direction)
+                while not WorkingDayEngine.is_working_day(candidate, db):
+                    candidate += timedelta(days=direction)
+                
+                if candidate != current_end:
+                    proj.planned_end_date = candidate
+                    db.commit()
+                    from app.services.project_metrics_service import ProjectMetricsService
+                    ProjectMetricsService.recalculate(db, pid)
+                    from app.services.audit_service import AuditService
+                    AuditService.log(
+                        db, "project", pid, "AUTO_RECALC",
+                        old_value={"planned_end_date": current_end.isoformat()},
+                        new_value={"planned_end_date": candidate.isoformat()},
+                    )
+                    results["project_adjustments"].append({
+                        "project_id": str(pid),
+                        "old_end": current_end.isoformat(),
+                        "new_end": candidate.isoformat()
+                    })
+
+        # Recalculate tasks
+        for tid in task_ids:
+            task = db.get(Task, tid)
+            if task and task.planned_end_date:
+                current_end = task.planned_end_date
+                direction = 1 if is_addition else -1
+                candidate = current_end + timedelta(days=direction)
+                while not WorkingDayEngine.is_working_day(candidate, db):
+                    candidate += timedelta(days=direction)
+                
+                if candidate != current_end:
+                    task.planned_end_date = candidate
+                    db.commit()
+                    results["task_adjustments"].append({
+                        "task_id": str(tid),
+                        "old_end": current_end.isoformat(),
+                        "new_end": candidate.isoformat()
+                    })
+
+        if project_ids or task_ids:
+            logger.info(
+                f"[Recalc] Holiday '{holiday.name}' ({action}): "
+                f"{len(project_ids)} projects, {len(task_ids)} tasks adjusted"
+            )
+
+        return results

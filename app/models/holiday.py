@@ -40,6 +40,9 @@ class Holiday(Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
+    affects_working_days: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("employees.id", ondelete="SET NULL"),

@@ -27,6 +27,16 @@ class CalendarSettingsResponse(BaseModel):
     office_end_time: str
     default_daily_hours: float
     working_hours_per_day: float
+    enable_birthdays: bool
+    enable_company_events: bool
+    enable_holidays: bool
+    enable_task_events: bool
+    enable_project_events: bool
+    color_holiday: str
+    color_birthday: str
+    color_task: str
+    color_project: str
+    color_company_event: str
 
     model_config = {"from_attributes": True}
 
@@ -38,12 +48,21 @@ class CalendarSettingsUpdate(BaseModel):
     office_end_time: str | None = Field(None, max_length=5)
     default_daily_hours: float | None = None
     working_hours_per_day: float | None = None
+    enable_birthdays: bool | None = None
+    enable_company_events: bool | None = None
+    enable_holidays: bool | None = None
+    enable_task_events: bool | None = None
+    enable_project_events: bool | None = None
+    color_holiday: str | None = Field(None, max_length=7)
+    color_birthday: str | None = Field(None, max_length=7)
+    color_task: str | None = Field(None, max_length=7)
+    color_project: str | None = Field(None, max_length=7)
+    color_company_event: str | None = Field(None, max_length=7)
 
 
 @router.get(
     "",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Calendar", "view"))],
 )
 def get_settings(db: Session = Depends(get_db)):
     settings = db.scalar(select(CalendarSettings))
@@ -62,7 +81,7 @@ def get_settings(db: Session = Depends(get_db)):
 @router.put(
     "",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Holiday", "edit"))],
+    dependencies=[Depends(require_permission("CalendarSettings", "edit"))],
 )
 def update_settings(
     data: CalendarSettingsUpdate,
