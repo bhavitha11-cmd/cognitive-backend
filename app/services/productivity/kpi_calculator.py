@@ -76,7 +76,7 @@ class KPICalculator:
             status = "success"
         elif name == "Productive Time":
             tooltip = f"Total task work session time: {formatted}"
-            req_sec = (rule.required_productive_hours * 3600) if rule else 28800
+            req_sec = (float(rule.required_productive_hours) * 3600) if rule else 28800
             if raw_seconds >= req_sec:
                 status = "success"
                 color = "#10B981"
