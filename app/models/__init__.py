@@ -34,6 +34,14 @@ from app.models.task_template import TaskTemplate
 from app.models.idle_reason_master import IdleReasonMaster
 from app.models.idle_classification import IdleClassification
 
+from app.models.task_continuity import (
+    TaskRisk,
+    TaskPauseHistory,
+    TaskTransferHistory,
+    TaskDelegation,
+    ManagerDecision,
+)
+
 __all__ = [
     "Role",
     "RolePermission",
@@ -67,4 +75,10 @@ __all__ = [
     "TaskTemplate",
     "IdleReasonMaster",
     "IdleClassification",
+    "TaskRisk",
+    "TaskPauseHistory",
+    "TaskTransferHistory",
+    "TaskDelegation",
+    "ManagerDecision",
 ]
+

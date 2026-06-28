@@ -615,6 +615,11 @@ class LeaveService:
             if action == "APPROVED":
                 year = req.from_date.year
                 self._recompute_used(req.employee_id, req.leave_type_id, year)
+                
+                # Trigger Task Continuity Engine
+                from app.services.task_continuity_service import TaskContinuityService
+                continuity_svc = TaskContinuityService(self.db, self.current_user_id)
+                continuity_svc.detect_and_create_task_risks(req.employee_id, req)
 
             AuditService.log(
                 self.db,

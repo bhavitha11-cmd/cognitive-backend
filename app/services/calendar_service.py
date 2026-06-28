@@ -54,7 +54,7 @@ class CalendarService:
             )
 
         type_set = set(types) if types else {
-            "holiday", "birthday", "task", "project", "company_event"
+            "holiday", "birthday", "task", "project", "company_event", "leave", "task_risk", "paused_task"
         }
         events: list[CalendarEventResponse] = []
 
@@ -68,6 +68,12 @@ class CalendarService:
             events.extend(self._get_project_events(from_date, to_date, settings.color_project))
         if "company_event" in type_set and settings.enable_company_events:
             events.extend(self._get_company_events(from_date, to_date, settings.color_company_event))
+        if "leave" in type_set:
+            events.extend(self._get_leave_events(from_date, to_date))
+        if "task_risk" in type_set:
+            events.extend(self._get_task_risk_events(from_date, to_date))
+        if "paused_task" in type_set:
+            events.extend(self._get_paused_task_events(from_date, to_date))
 
         events.sort(key=lambda e: e.start)
         return events
@@ -261,6 +267,9 @@ class CalendarService:
         if not holiday:
             return {"error": f"Holiday {holiday_id} not found"}
 
+        if getattr(holiday, "holiday_type", None) == "EMERGENCY":
+            return {"message": "Emergency holiday - skipping auto recalculation"}
+
         holiday_date = holiday.date
         action_lower = action.lower()
 
@@ -360,3 +369,97 @@ class CalendarService:
             )
 
         return results
+
+    def _get_leave_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
+        from app.models.leave_request import LeaveRequest
+        from sqlalchemy.orm import joinedload
+        leaves = self.db.scalars(
+            select(LeaveRequest)
+            .options(joinedload(LeaveRequest.employee))
+            .where(
+                LeaveRequest.status == "APPROVED",
+                LeaveRequest.from_date <= to_date,
+                LeaveRequest.to_date >= from_date,
+            )
+        ).all()
+        return [
+            CalendarEventResponse(
+                id=f"leave-{l.id}",
+                title=f"[Leave] {l.employee.first_name} {l.employee.last_name or ''}".strip(),
+                start=l.from_date.isoformat(),
+                end=(l.to_date + timedelta(days=1)).isoformat(),
+                allDay=True,
+                backgroundColor="#EC4899",
+                borderColor="#EC4899",
+                textColor="#ffffff",
+                extendedProps={
+                    "type": "leave",
+                    "employee_name": f"{l.employee.first_name} {l.employee.last_name or ''}".strip(),
+                },
+            )
+            for l in leaves
+        ]
+
+    def _get_task_risk_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
+        from app.models.task_continuity import TaskRisk
+        from sqlalchemy.orm import joinedload
+        risks = self.db.scalars(
+            select(TaskRisk)
+            .options(joinedload(TaskRisk.task))
+            .where(
+                TaskRisk.status == "PENDING_MANAGER_ACTION",
+                TaskRisk.leave_start_date <= to_date,
+                TaskRisk.leave_end_date >= from_date,
+            )
+        ).all()
+        return [
+            CalendarEventResponse(
+                id=f"risk-{r.id}",
+                title=f"[Risk] {r.task.task_code}: {r.task.title[:30]}",
+                start=r.leave_start_date.isoformat(),
+                end=(r.leave_end_date + timedelta(days=1)).isoformat(),
+                allDay=True,
+                backgroundColor="#EF4444",
+                borderColor="#EF4444",
+                textColor="#ffffff",
+                extendedProps={
+                    "type": "task_risk",
+                    "task_id": str(r.task_id),
+                    "risk_level": r.risk_level,
+                },
+            )
+            for r in risks
+        ]
+
+    def _get_paused_task_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
+        from app.models.task_continuity import TaskPauseHistory
+        from sqlalchemy.orm import joinedload
+        pauses = self.db.scalars(
+            select(TaskPauseHistory)
+            .options(joinedload(TaskPauseHistory.task))
+            .where(
+                TaskPauseHistory.is_active == True,
+            )
+        ).all()
+        events = []
+        for p in pauses:
+            paused_d = p.paused_at.date()
+            resumed_d = p.resumed_at.date() if p.resumed_at else date.today()
+            if paused_d <= to_date and resumed_d >= from_date:
+                events.append(
+                    CalendarEventResponse(
+                        id=f"paused-{p.id}",
+                        title=f"[Paused] {p.task.task_code}: {p.task.title[:30]}",
+                        start=paused_d.isoformat(),
+                        end=(resumed_d + timedelta(days=1)).isoformat(),
+                        allDay=True,
+                        backgroundColor="#F59E0B",
+                        borderColor="#F59E0B",
+                        textColor="#ffffff",
+                        extendedProps={
+                            "type": "paused_task",
+                            "task_id": str(p.task_id),
+                        },
+                    )
+                )
+        return events

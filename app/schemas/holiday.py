@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 VALID_HOLIDAY_TYPES = {
     "PUBLIC", "COMPANY_SHUTDOWN", "SPECIAL", "OBSERVANCE",
-    "OPTIONAL", "COMPANY_SPECIFIC",
+    "OPTIONAL", "COMPANY_SPECIFIC", "EMERGENCY",
 }
 
 
@@ -74,3 +74,51 @@ class HolidayListResponse(BaseModel):
     affects_working_days: bool
 
     model_config = {"from_attributes": True}
+
+
+class ProjectImpactSchema(BaseModel):
+    project_id: uuid.UUID
+    project_name: str
+    current_start_date: date_type
+    current_end_date: date_type
+    proposed_start_date: date_type
+    proposed_end_date: date_type
+    delivery_risk: str
+    affected_tasks_count: int
+
+
+class TaskImpactSchema(BaseModel):
+    task_id: uuid.UUID
+    task_name: str
+    assigned_employee_name: str | None
+    current_status: str
+    current_start_date: date_type
+    current_end_date: date_type
+    proposed_start_date: date_type
+    proposed_end_date: date_type
+    dependency_info: str | None
+
+
+class EmergencyHolidayImpactResponse(BaseModel):
+    holiday_id: uuid.UUID
+    holiday_name: str
+    holiday_date: date_type
+    affected_projects: list[ProjectImpactSchema]
+    affected_tasks: list[TaskImpactSchema]
+
+
+class ProjectDateOverride(BaseModel):
+    project_id: uuid.UUID
+    planned_start_date: Optional[date_type] = None
+    planned_end_date: Optional[date_type] = None
+
+
+class TaskDateOverride(BaseModel):
+    task_id: uuid.UUID
+    planned_start_date: Optional[date_type] = None
+    planned_end_date: Optional[date_type] = None
+
+
+class EmergencyHolidayApplyRequest(BaseModel):
+    project_updates: list[ProjectDateOverride] = Field(default_factory=list)
+    task_updates: list[TaskDateOverride] = Field(default_factory=list)

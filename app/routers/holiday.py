@@ -13,6 +13,8 @@ from app.schemas.holiday import (
     HolidayCreate,
     HolidayResponse,
     HolidayUpdate,
+    EmergencyHolidayImpactResponse,
+    EmergencyHolidayApplyRequest,
 )
 
 router = APIRouter(
@@ -215,4 +217,63 @@ def toggle_holiday(
         success=True,
         message=f"Holiday {'activated' if holiday.is_active else 'deactivated'}",
         data={"holiday": holiday.model_dump(mode="json")},
+    )
+
+
+@router.get(
+    "/emergency/{id}/impact-analysis",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Holiday", "view"))],
+)
+def get_emergency_holiday_impact(
+    id: uuid.UUID,
+    service=Depends(_get_service),
+):
+    try:
+        impact = service.get_impact_analysis(id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Emergency holiday impact analysis generated",
+        data=impact,
+    )
+
+
+@router.post(
+    "/emergency/{id}/apply",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Holiday", "approve"))],
+)
+def apply_emergency_holiday(
+    id: uuid.UUID,
+    data: EmergencyHolidayApplyRequest,
+    service=Depends(_get_service),
+):
+    try:
+        result = service.apply_emergency_holiday(id, data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=result["message"],
+    )
+
+
+@router.post(
+    "/emergency/{id}/reject",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Holiday", "approve"))],
+)
+def reject_emergency_holiday(
+    id: uuid.UUID,
+    service=Depends(_get_service),
+):
+    try:
+        result = service.reject_emergency_holiday(id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return APIResponse(
+        success=True,
+        message=result["message"],
     )

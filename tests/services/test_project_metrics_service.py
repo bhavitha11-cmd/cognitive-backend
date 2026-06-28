@@ -30,6 +30,8 @@ def make_task(
     t.actual_hours = actual_hours
     t.actual_start_date = actual_start_date
     t.actual_end_date = actual_end_date
+    t.planned_start_date = None
+    t.planned_end_date = None
     return t
 
 

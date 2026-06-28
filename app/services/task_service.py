@@ -196,7 +196,12 @@ class TaskService:
                 "notes": "Auto-assigned on task creation",
                 "status": "ASSIGNED",
             }
-            self.repo.create_assignment(assignment_data)
+            assignment = self.repo.create_assignment(assignment_data)
+
+            # Trigger Task Continuity check for newly created assignment
+            from app.services.task_continuity_service import TaskContinuityService
+            continuity_svc = TaskContinuityService(self.db, self.current_user_id)
+            continuity_svc.check_and_create_risk_for_assignment(assignment)
 
         # Update task count on project if the project model supports it
         self._increment_project_task_count(project)
@@ -325,7 +330,12 @@ class TaskService:
                         "notes": "Assigned on task update",
                         "status": "ASSIGNED",
                     }
-                    self.repo.create_assignment(assignment_data)
+                    assignment = self.repo.create_assignment(assignment_data)
+
+                    # Trigger Task Continuity check for newly updated assignment
+                    from app.services.task_continuity_service import TaskContinuityService
+                    continuity_svc = TaskContinuityService(self.db, self.current_user_id)
+                    continuity_svc.check_and_create_risk_for_assignment(assignment)
 
         AuditService.log(
             self.db, "task", id, "UPDATE",

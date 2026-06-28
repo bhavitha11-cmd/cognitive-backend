@@ -18,6 +18,7 @@ from tests.conftest import (
     make_mock_employee,
     make_mock_task,
     make_mock_task_rework,
+    make_mock_project,
 )
 
 
@@ -26,8 +27,10 @@ from tests.conftest import (
 
 class TestOpenRework:
     def test_opens_rework_successfully(self, rework_service, mock_db):
+        from app.models.task import Task
         mock_task = make_mock_task(status="COMPLETED", rework_count=0)
-        mock_db.get.return_value = mock_task
+        mock_project = make_mock_project()
+        mock_db.get.side_effect = lambda model, id_: mock_task if model == Task else mock_project
         mock_db.scalar.return_value = 0  # no open rework cycles
 
         result = rework_service.open_rework(

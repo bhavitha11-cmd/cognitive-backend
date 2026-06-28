@@ -8,6 +8,9 @@ from app.models.attendance import Attendance
 from app.models.employee_break import EmployeeBreak
 from app.models.task_work_session import TaskWorkSession
 from app.models.attendance_rule import AttendanceRule
+from app.models.task import Task
+from app.models.task_assignment import TaskAssignment
+from app.models.task_continuity import TaskPauseHistory
 
 IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 
@@ -321,10 +324,44 @@ class KPICalculator:
 
         productive_seconds = cls.process_intervals(cin, cout, task_sessions, break_sessions)
 
+        # Compute paused and waiting seconds from TaskPauseHistory
+        stmt_pauses = (
+            select(TaskPauseHistory)
+            .join(Task)
+            .join(TaskAssignment, TaskAssignment.task_id == Task.id)
+            .where(
+                TaskAssignment.employee_id == employee_id,
+                TaskAssignment.status != "CANCELLED",
+            )
+        )
+        pauses = db.scalars(stmt_pauses).all()
+
+        pause_intervals = []
+        waiting_intervals = []
+        for p in pauses:
+            p_start = p.paused_at
+            p_end = p.resumed_at or now_utc
+            start_clamp = max(p_start, cin)
+            end_clamp = min(p_end, cout)
+            if start_clamp < end_clamp:
+                reason_str = (p.reason or "").lower()
+                is_waiting = any(w in reason_str for w in ["waiting customer", "waiting information", "waiting review", "waiting"])
+                if is_waiting:
+                    waiting_intervals.append((start_clamp, end_clamp))
+                else:
+                    pause_intervals.append((start_clamp, end_clamp))
+
+        merged_pauses = cls.merge_intervals(pause_intervals)
+        merged_waiting = cls.merge_intervals(waiting_intervals)
+        paused_seconds = sum(int((end - start).total_seconds()) for start, end in merged_pauses)
+        waiting_seconds = sum(int((end - start).total_seconds()) for start, end in merged_waiting)
+
         return {
             "presence_seconds": presence_seconds,
             "break_seconds": break_seconds,
             "productive_seconds": productive_seconds,
+            "paused_seconds": paused_seconds,
+            "waiting_seconds": waiting_seconds,
         }
 
     @classmethod
@@ -335,18 +372,20 @@ class KPICalculator:
         1. Presence >= Break
         2. Presence >= Productive
         3. Organization = Presence - Break
-        4. Organization = Productive + Idle
+        4. Organization = Productive + Idle + Paused + Waiting
         """
         presence = compiled["presence_time"]["raw_seconds"]
         breaks = compiled["break_time"]["raw_seconds"]
         productive = compiled["productive_time"]["raw_seconds"]
         org = compiled["organization_time"]["raw_seconds"]
         idle = compiled["idle_time"]["raw_seconds"]
+        paused = compiled.get("paused_time", {}).get("raw_seconds", 0)
+        waiting = compiled.get("waiting_time", {}).get("raw_seconds", 0)
 
         assert presence >= breaks, f"Invariant Violation: Presence ({presence}s) < Break ({breaks}s)"
         assert presence >= productive, f"Invariant Violation: Presence ({presence}s) < Productive ({productive}s)"
         assert org == presence - breaks, f"Invariant Violation: Org ({org}s) != Presence ({presence}s) - Break ({breaks}s)"
-        assert org == productive + idle, f"Invariant Violation: Org ({org}s) != Productive ({productive}s) + Idle ({idle}s)"
+        assert org == productive + idle + paused + waiting, f"Invariant Violation: Org ({org}s) != Productive ({productive}s) + Idle ({idle}s) + Paused ({paused}s) + Waiting ({waiting}s)"
 
     @classmethod
     def compile_kpi_metrics(
@@ -359,7 +398,9 @@ class KPICalculator:
         breaks = min(presence, raw["break_seconds"])
         org = presence - breaks
         productive = min(org, raw["productive_seconds"])
-        idle = org - productive
+        paused = raw.get("paused_seconds", 0)
+        waiting = raw.get("waiting_seconds", 0)
+        idle = max(0, org - productive - paused - waiting)
 
         req_hours = float(rule.required_productive_hours)
         req_seconds = int(req_hours * 3600)
@@ -404,6 +445,12 @@ class KPICalculator:
             ),
             "idle_percentage": cls.make_kpi_object(
                 "Idle %", 0, percentage_override=idle_pct, formula="Idle / Presence * 100"
+            ),
+            "paused_time": cls.make_kpi_object(
+                "Paused Time", paused, formula="Sum of Task Paused Durations"
+            ),
+            "waiting_time": cls.make_kpi_object(
+                "Waiting Time", waiting, formula="Sum of Task Waiting Durations"
             ),
         }
 

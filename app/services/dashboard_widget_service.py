@@ -203,3 +203,111 @@ class DashboardWidgetService:
                 )
             )
         return results
+
+    def get_tasks_requiring_reassignment(self) -> list[dict]:
+        from app.models.task_continuity import TaskRisk
+        from sqlalchemy.orm import joinedload
+        today = date.today()
+        risks = self.db.scalars(
+            select(TaskRisk)
+            .options(
+                joinedload(TaskRisk.task),
+                joinedload(TaskRisk.project),
+                joinedload(TaskRisk.employee),
+                joinedload(TaskRisk.leave_request)
+            )
+            .where(TaskRisk.status == "PENDING_MANAGER_ACTION")
+        ).all()
+
+        results = []
+        for r in risks:
+            days_rem = 0
+            if r.task.planned_delivery_date:
+                days_rem = max(0, (r.task.planned_delivery_date - today).days)
+
+            leave_dur = float(r.leave_request.total_days)
+
+            emp_name = f"{r.employee.first_name} {r.employee.last_name or ''}".strip()
+            results.append({
+                "project_id": str(r.project_id),
+                "project_name": r.project.name,
+                "task_id": str(r.task_id),
+                "task_code": r.task.task_code,
+                "task_title": r.task.title,
+                "employee_id": str(r.employee_id),
+                "employee_name": emp_name,
+                "remaining_hours": float(r.remaining_hours),
+                "days_remaining": days_rem,
+                "leave_duration": leave_dur,
+                "suggested_impact": r.project_impact or "",
+            })
+        return results
+
+    def get_continuity_dashboard_kpis(self) -> dict:
+        from app.models.task_continuity import TaskRisk, TaskTransferHistory
+        from app.models.employee import Employee
+        from app.services.planning_service import PlanningService
+        from sqlalchemy import select
+        from collections import defaultdict
+
+        pending_risks = self.db.scalars(
+            select(TaskRisk).where(TaskRisk.status == "PENDING_MANAGER_ACTION")
+        ).all()
+
+        emp_on_leave = len({r.employee_id for r in pending_risks})
+        tasks_at_risk = len({r.task_id for r in pending_risks})
+        projects_at_risk = len({r.project_id for r in pending_risks})
+
+        # Calculate utilization for each employee for the next 30 days
+        employees = self.db.scalars(select(Employee).where(Employee.is_active == True)).all()
+        today = date.today()
+        end_date = today + timedelta(days=30)
+
+        available_count = 0
+        overloaded_count = 0
+        total_utilization = 0.0
+
+        planning_svc = PlanningService(self.db)
+        for emp in employees:
+            try:
+                cap = planning_svc.get_employee_capacity(emp.id, today, end_date)
+                utils = [w.utilization_pct for w in cap.weeks]
+                avg_util = sum(utils) / len(utils) if utils else 0.0
+            except Exception:
+                avg_util = 0.0
+
+            if avg_util < 50.0:
+                available_count += 1
+            if avg_util > 100.0:
+                overloaded_count += 1
+            total_utilization += avg_util
+
+        avg_utilization_all = round(total_utilization / len(employees) if employees else 0.0, 1)
+
+        # Reassignment Trend (last 6 months)
+        six_months_ago = datetime.now() - timedelta(days=180)
+        transfers = self.db.scalars(
+            select(TaskTransferHistory)
+            .where(TaskTransferHistory.transfer_date >= six_months_ago)
+        ).all()
+
+        trend = defaultdict(int)
+        for t in transfers:
+            month_str = t.transfer_date.strftime("%Y-%m")
+            trend[month_str] += 1
+
+        # Fill in missing months to ensure trend structure is nice
+        # e.g., last 6 months
+        trend_dict = dict(sorted(trend.items()))
+
+        return {
+            "employees_on_leave_with_active_tasks": emp_on_leave,
+            "tasks_at_risk": tasks_at_risk,
+            "projects_at_risk": projects_at_risk,
+            "upcoming_resource_shortage": overloaded_count,
+            "available_engineers_count": available_count,
+            "overloaded_engineers_count": overloaded_count,
+            "resource_utilization_pct": avg_utilization_all,
+            "reassignment_trend": trend_dict,
+        }
+
