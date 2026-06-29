@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # Database Settings
     DATABASE_URL: str
     DB_ECHO: bool = False
+    REDIS_URL: str = "redis://localhost:6379/0"
 
     # Security Settings
     SECRET_KEY: str

@@ -365,6 +365,101 @@ class KPICalculator:
         }
 
     @classmethod
+    def calculate_raw_metrics_batch(
+        cls,
+        db: Session,
+        employee_ids: list[uuid.UUID],
+        query_date: date,
+        now_utc: datetime
+    ) -> dict[uuid.UUID, dict[str, int]]:
+        """Compute presence, break, and productive seconds in a single batch query for multiple employees."""
+        if not employee_ids:
+            return {}
+
+        # 1. Fetch Attendance records
+        attendances = {
+            att.employee_id: att
+            for att in db.scalars(
+                select(Attendance).where(
+                    Attendance.employee_id.in_(employee_ids),
+                    Attendance.date == query_date,
+                )
+            ).all()
+        }
+
+        # 2. Fetch Break records
+        breaks = db.scalars(
+            select(EmployeeBreak).where(
+                EmployeeBreak.employee_id.in_(employee_ids),
+                EmployeeBreak.date == query_date,
+            )
+        ).all()
+        breaks_by_emp = {}
+        for b in breaks:
+            breaks_by_emp.setdefault(b.employee_id, []).append(b)
+
+        # 3. Fetch Task Work Sessions
+        day_start, day_end = get_day_boundaries_utc(query_date)
+        sessions = db.scalars(
+            select(TaskWorkSession).where(
+                TaskWorkSession.employee_id.in_(employee_ids),
+                TaskWorkSession.start_time >= day_start,
+                TaskWorkSession.start_time <= day_end,
+            )
+        ).all()
+        sessions_by_emp = {}
+        for s in sessions:
+            sessions_by_emp.setdefault(s.employee_id, []).append(s)
+
+        results = {}
+        for emp_id in employee_ids:
+            attendance = attendances.get(emp_id)
+            if not attendance or not attendance.clock_in:
+                results[emp_id] = {
+                    "presence_seconds": 0,
+                    "break_seconds": 0,
+                    "productive_seconds": 0,
+                }
+                continue
+
+            cin = attendance.clock_in
+            cout = attendance.clock_out
+            presence_seconds = max(0, int(((cout or now_utc) - cin).total_seconds()))
+            cout = cout or now_utc
+
+            break_sessions = []
+            for b in breaks_by_emp.get(emp_id, []):
+                break_sessions.append((b.break_start, b.break_end or now_utc))
+
+            task_sessions = []
+            for s in sessions_by_emp.get(emp_id, []):
+                s_start = s.start_time
+                s_end = s.end_time
+                if s.status == "RUNNING" and not s_end:
+                    s_end = now_utc
+                elif not s_end:
+                    s_end = s_start + timedelta(minutes=(s.duration_minutes or 0))
+                task_sessions.append((s_start, s_end))
+
+            clamped_breaks = []
+            for b_start, b_end in break_sessions:
+                start_c = max(b_start, cin)
+                end_c = min(b_end, cout)
+                if start_c < end_c:
+                    clamped_breaks.append((start_c, end_c))
+            merged_breaks = cls.merge_intervals(clamped_breaks)
+            break_seconds = sum(int((end - start).total_seconds()) for start, end in merged_breaks)
+
+            productive_seconds = cls.process_intervals(cin, cout, task_sessions, break_sessions)
+
+            results[emp_id] = {
+                "presence_seconds": presence_seconds,
+                "break_seconds": break_seconds,
+                "productive_seconds": productive_seconds,
+            }
+        return results
+
+    @classmethod
     def verify_kpi_invariants(cls, raw: dict[str, int], compiled: dict[str, dict[str, Any]]) -> None:
         """
         Validate mathematical invariants of EWPE productivity formulas.
