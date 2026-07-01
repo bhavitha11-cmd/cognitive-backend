@@ -18,10 +18,9 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import SUPER_ADMIN_CODES
 from app.database.session import get_db
 from app.dependencies import get_current_user
-
-SUPER_ADMIN_CODES = {"ADMIN", "CEO", "CHIEF_EXECUTIVE_OFFICER", "ADMINISTRATOR"}
 
 # Access level priority (higher number = more access)
 _ACCESS_PRIORITY = {"SELF": 0, "TEAM": 1, "MANAGED": 2, "FULL": 3}

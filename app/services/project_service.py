@@ -80,6 +80,7 @@ class ProjectService:
 
     def _get_task_counts(self, project_id: UUID) -> tuple[int, int]:
         """Returns (total_tasks, completed_tasks)."""
+        import logging
         try:
             from app.models.task import Task
             total = self.db.scalar(
@@ -97,7 +98,10 @@ class ProjectService:
                 )
             ) or 0
             return total, completed
-        except Exception:
+        except Exception as e:
+            logging.getLogger(__name__).error(
+                f"Failed to get task counts for project {project_id}: {e}", exc_info=True
+            )
             return 0, 0
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -303,22 +307,23 @@ class ProjectService:
         # Block delete if active tasks exist
         try:
             from app.models.task import Task
-            blocking_count = self.db.scalar(
-                select(func.count(Task.id)).where(
-                    and_(
-                        Task.project_id == id,
-                        Task.status.in_(["IN_PROGRESS", "NOT_STARTED"]),
-                        Task.is_active == True,  # noqa: E712
-                    )
+        except ImportError as e:
+            raise RuntimeError(f"Cannot delete project - Task model unavailable: {e}")
+
+        blocking_count = self.db.scalar(
+            select(func.count(Task.id)).where(
+                and_(
+                    Task.project_id == id,
+                    Task.status.in_(["IN_PROGRESS", "NOT_STARTED"]),
+                    Task.is_active == True,  # noqa: E712
                 )
-            ) or 0
-            if blocking_count:
-                raise ValueError(
-                    f"Cannot delete project '{project.name}': {blocking_count} active task(s) "
-                    f"in IN_PROGRESS or NOT_STARTED state. Complete or cancel them first."
-                )
-        except ImportError:
-            pass
+            )
+        ) or 0
+        if blocking_count:
+            raise ValueError(
+                f"Cannot delete project '{project.name}': {blocking_count} active task(s) "
+                f"in IN_PROGRESS or NOT_STARTED state. Complete or cancel them first."
+            )
 
         try:
             AuditService.log(

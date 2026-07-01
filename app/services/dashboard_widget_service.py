@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
-from sqlalchemy import select, func
-from sqlalchemy.orm import Session
+from sqlalchemy import select, func, extract
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import selectinload
 
 from app.models.employee import Employee
 from app.models.project import Project
@@ -44,32 +45,29 @@ class DashboardWidgetService:
 
     def get_today_birthdays(self) -> list[BirthdayInfo]:
         today = date.today()
-        employees = self.db.scalars(
-            select(Employee).where(
+        stmt = (
+            select(Employee)
+            .where(
                 Employee.is_active == True,
                 Employee.date_of_birth.isnot(None),
+                extract('month', Employee.date_of_birth) == today.month,
+                extract('day', Employee.date_of_birth) == today.day,
             )
-        ).all()
+        )
+        employees = self.db.scalars(stmt).all()
 
         results: list[BirthdayInfo] = []
         for emp in employees:
-            if not emp.date_of_birth:
-                continue
-            try:
-                bday = date(today.year, emp.date_of_birth.month, emp.date_of_birth.day)
-            except ValueError:
-                bday = date(today.year, 3, 1)
-            if bday == today:
-                dept_name = None
-                if emp.department:
-                    dept_name = getattr(emp.department, "name", None)
-                results.append(
-                    BirthdayInfo(
-                        id=emp.id,
-                        name=f"{emp.first_name} {emp.last_name or ''}".strip(),
-                        department=dept_name,
-                    )
+            dept_name = None
+            if emp.department:
+                dept_name = getattr(emp.department, "name", None)
+            results.append(
+                BirthdayInfo(
+                    id=emp.id,
+                    name=f"{emp.first_name} {emp.last_name or ''}".strip(),
+                    department=dept_name,
                 )
+            )
         return results
 
     def get_upcoming_holidays(self, days: int = 30) -> list[HolidayInfo]:
@@ -88,39 +86,57 @@ class DashboardWidgetService:
     def get_upcoming_birthdays(self, days: int = 7) -> list[BirthdayInfo]:
         today = date.today()
         end = today + timedelta(days=days)
-        employees = self.db.scalars(
-            select(Employee).where(
+
+        # Build a set of (month, day) pairs for the window, pushing filter to DB
+        day_pairs: list[tuple[int, int]] = []
+        curr = today
+        while curr <= end:
+            try:
+                # Validate the day exists (handles leap year edge cases)
+                date(today.year, curr.month, curr.day)
+                day_pairs.append((curr.month, curr.day))
+            except ValueError:
+                # Feb 29 in non-leap year — use Feb 28 instead
+                day_pairs.append((2, 28))
+            curr += timedelta(days=1)
+
+        from sqlalchemy import or_, and_
+        month_day_filters = [
+            and_(
+                extract('month', Employee.date_of_birth) == m,
+                extract('day', Employee.date_of_birth) == d,
+            )
+            for m, d in set(day_pairs)
+        ]
+        stmt = (
+            select(Employee)
+            .where(
                 Employee.is_active == True,
                 Employee.date_of_birth.isnot(None),
+                or_(*month_day_filters) if month_day_filters else False,
             )
-        ).all()
+        )
+        employees = self.db.scalars(stmt).all()
 
         results: list[BirthdayInfo] = []
         for emp in employees:
-            if not emp.date_of_birth:
-                continue
-            try:
-                bday = date(today.year, emp.date_of_birth.month, emp.date_of_birth.day)
-            except ValueError:
-                bday = date(today.year, 3, 1)
-
-            if today <= bday <= end:
-                dept_name = None
-                if emp.department:
-                    dept_name = getattr(emp.department, "name", None)
-                results.append(
-                    BirthdayInfo(
-                        id=emp.id,
-                        name=f"{emp.first_name} {emp.last_name or ''}".strip(),
-                        department=dept_name,
-                    )
+            dept_name = None
+            if emp.department:
+                dept_name = getattr(emp.department, "name", None)
+            results.append(
+                BirthdayInfo(
+                    id=emp.id,
+                    name=f"{emp.first_name} {emp.last_name or ''}".strip(),
+                    department=dept_name,
                 )
+            )
         return results
 
     def get_today_tasks(self) -> list[TaskDueInfo]:
         today = date.today()
         stmt = (
             select(Task)
+            .options(joinedload(Task.project))
             .where(
                 Task.planned_delivery_date == today,
                 Task.is_active == True,
@@ -151,15 +167,42 @@ class DashboardWidgetService:
         ]
 
     def get_project_deliveries(self, days: int = 30) -> list[ProjectDeliveryInfo]:
+        from app.core.rbac import get_user_context, DataAccessLevel
         today = date.today()
         end = today + timedelta(days=days)
-        projects = self.db.scalars(
-            select(Project).where(
+        stmt = (
+            select(Project)
+            .options(joinedload(Project.project_manager))
+            .where(
                 Project.is_active == True,
                 Project.planned_end_date.between(today, end),
                 Project.status.notin_(["Completed", "Cancelled"]),
             )
-        ).all()
+        )
+
+        if self.current_user_id:
+            ctx = get_user_context(self.db, str(self.current_user_id))
+            if ctx.data_access_level == DataAccessLevel.MANAGED:
+                stmt = stmt.where(Project.project_manager_id == self.current_user_id)
+            elif ctx.data_access_level in (DataAccessLevel.TEAM, DataAccessLevel.SELF):
+                from app.models.task_assignment import TaskAssignment as _TA
+                from app.models.project_member import ProjectMember
+                accessible_project_ids = self.db.scalars(
+                    select(ProjectMember.project_id).where(
+                        ProjectMember.employee_id == self.current_user_id
+                    )
+                ).all()
+                if not accessible_project_ids:
+                    # Fall back to projects via task assignment
+                    accessible_project_ids = self.db.scalars(
+                        select(Task.project_id)
+                        .join(_TA, _TA.task_id == Task.id)
+                        .where(_TA.employee_id == self.current_user_id)
+                    ).all()
+                stmt = stmt.where(Project.id.in_(accessible_project_ids))
+            # DataAccessLevel.FULL: keep all
+
+        projects = self.db.scalars(stmt).all()
 
         return [
             ProjectDeliveryInfo(
@@ -176,14 +219,50 @@ class DashboardWidgetService:
         ]
 
     def get_delayed_tasks(self) -> list[DelayedTaskInfo]:
+        from app.core.rbac import get_user_context, DataAccessLevel
         today = date.today()
-        tasks = self.db.scalars(
-            select(Task).where(
+        stmt = (
+            select(Task)
+            .options(
+                joinedload(Task.project),
+                selectinload(Task.assignments).joinedload(TaskAssignment.employee),
+            )
+            .where(
                 Task.is_active == True,
                 Task.planned_delivery_date < today,
                 Task.status.notin_(["COMPLETED", "CANCELLED"]),
             )
-        ).all()
+        )
+
+        if self.current_user_id:
+            ctx = get_user_context(self.db, str(self.current_user_id))
+            if ctx.data_access_level == DataAccessLevel.SELF:
+                assigned_task_ids = self.db.scalars(
+                    select(TaskAssignment.task_id).where(
+                        TaskAssignment.employee_id == self.current_user_id,
+                    )
+                ).all()
+                stmt = stmt.where(Task.id.in_(assigned_task_ids))
+            elif ctx.data_access_level == DataAccessLevel.TEAM:
+                # Tasks in projects where the user is a member
+                from app.models.project_member import ProjectMember
+                accessible_project_ids = self.db.scalars(
+                    select(ProjectMember.project_id).where(
+                        ProjectMember.employee_id == self.current_user_id
+                    )
+                ).all()
+                stmt = stmt.where(Task.project_id.in_(accessible_project_ids))
+            elif ctx.data_access_level == DataAccessLevel.MANAGED:
+                stmt = stmt.where(
+                    Task.project_id.in_(
+                        select(Project.id).where(
+                            Project.project_manager_id == self.current_user_id
+                        )
+                    )
+                )
+            # DataAccessLevel.FULL: keep all
+
+        tasks = self.db.scalars(stmt).all()
 
         results: list[DelayedTaskInfo] = []
         for t in tasks:
@@ -311,3 +390,26 @@ class DashboardWidgetService:
             "reassignment_trend": trend_dict,
         }
 
+    def get_pending_schedule_reviews(self) -> list:
+        """Return PENDING schedule reviews for the currently authenticated user.
+
+        Uses the same RBAC pattern as ``get_today_tasks``:
+        - Super-admins / full data-access users receive all pending reviews
+          across all project managers.
+        - Everyone else receives only reviews where they are the assigned
+          project manager.
+
+        Returns a list of ``PendingScheduleReviewWidget`` objects.
+        """
+        from app.core.rbac import get_user_context, DataAccessLevel
+        from app.services.pending_schedule_review_service import PendingScheduleReviewService
+
+        svc = PendingScheduleReviewService(self.db, self.current_user_id)
+
+        if self.current_user_id:
+            ctx = get_user_context(self.db, str(self.current_user_id))
+            if ctx.data_access_level == DataAccessLevel.FULL:
+                return svc.get_widget_data_all()
+            return svc.get_widget_data_for_manager(self.current_user_id)
+
+        return []

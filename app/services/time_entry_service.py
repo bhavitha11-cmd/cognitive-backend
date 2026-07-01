@@ -460,18 +460,19 @@ class TimeEntryService:
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _recompute_task_actual_hours(self, task_id: UUID) -> None:
-        """Recompute task.actual_hours from non-REJECTED time entries, then cascade to project metrics."""
+        """Recompute task.actual_hours from SUBMITTED and APPROVED time entries only,
+        then cascade to project metrics. DRAFT and REJECTED entries are excluded."""
         total = self.db.scalar(
             select(func.sum(TimeEntry.hours_spent)).where(
                 TimeEntry.task_id == task_id,
-                TimeEntry.status.not_in(["REJECTED"]),
+                TimeEntry.status.in_(["SUBMITTED", "APPROVED"]),  # Exclude DRAFT and REJECTED
             )
         ) or 0
 
         task = self.db.get(Task, task_id)
         if task:
             task.actual_hours = float(total)
-            self.db.commit()
+            self.db.flush()  # Changed from db.commit() - callers own the transaction boundary
             self._trigger_project_recalc(task.project_id)
 
     def _trigger_project_recalc(self, project_id: UUID) -> None:
@@ -479,7 +480,7 @@ class TimeEntryService:
         try:
             from app.services.project_metrics_service import ProjectMetricsService
             ProjectMetricsService.recalculate(self.db, project_id)
-            self.db.commit()
+            self.db.flush()  # Changed from db.commit() - callers own the transaction boundary
         except Exception:
             logging.getLogger(__name__).warning(
                 "[TimeEntryService] project_metrics recalc failed for project %s",

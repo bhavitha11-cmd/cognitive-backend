@@ -11,11 +11,11 @@ from app.schemas.common import APIResponse
 class TaskReworkCreate(BaseModel):
     task_id: uuid.UUID
     reason: str | None = Field(default=None, max_length=1000)
-    hours_spent: float = Field(default=0, ge=0)
+    hours_spent: float = Field(default=0, ge=0, le=1000)
 
 
 class TaskReworkClose(BaseModel):
-    hours_spent: float = Field(..., ge=0)
+    hours_spent: float = Field(..., ge=0, le=1000)
 
 
 class TaskReworkRead(BaseModel):

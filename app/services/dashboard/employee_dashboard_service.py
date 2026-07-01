@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 from sqlalchemy import select, func, and_
 from sqlalchemy.orm import Session
@@ -97,7 +97,7 @@ class EmployeeDashboardService:
 
         # 4. Today's Productivity (via KPICalculator)
         rule = PolicyResolver.get_rule(self.db)
-        now_utc = datetime.utcnow()
+        now_utc = datetime.now(timezone.utc)
         raw = KPICalculator.calculate_raw_metrics(self.db, employee_id, today, now_utc)
         compiled = KPICalculator.compile_kpi_metrics(raw, rule)
         prod_pct = compiled.get("productivity_percentage", {}).get("percentage", 0.0)

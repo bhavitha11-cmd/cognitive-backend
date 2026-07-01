@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -34,6 +35,7 @@ class Task(Base):
         Index("ix_tasks_is_active", "is_active"),
         Index("ix_tasks_team_id", "team_id"),
         UniqueConstraint("project_id", "task_code", name="uq_task_code_per_project"),
+        CheckConstraint("parent_task_id != id", name="ck_task_no_self_parent"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -65,8 +67,8 @@ class Task(Base):
     department_category: Mapped[str | None] = mapped_column(String(10), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="NOT_STARTED", nullable=False)
     priority: Mapped[str] = mapped_column(String(20), default="MEDIUM", nullable=False)
-    estimated_hours: Mapped[float] = mapped_column(Numeric(8, 2), default=0, nullable=False)
-    actual_hours: Mapped[float] = mapped_column(Numeric(8, 2), default=0, nullable=False)
+    estimated_hours: Mapped[float] = mapped_column(Numeric(8, 2), default=0, server_default="0", nullable=False)
+    actual_hours: Mapped[float] = mapped_column(Numeric(8, 2), default=0, server_default="0", nullable=False)
     planned_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     planned_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -76,14 +78,14 @@ class Task(Base):
     received_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     planned_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    progress: Mapped[float] = mapped_column(Numeric(5, 4), default=0, nullable=False)
+    progress: Mapped[float] = mapped_column(Numeric(5, 4), default=0, server_default="0", nullable=False)
     remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Rework tracking
-    rework_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    rework_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     total_rework_hours: Mapped[float] = mapped_column(
-        Numeric(8, 2), default=0, nullable=False
+        Numeric(8, 2), default=0, server_default="0", nullable=False
     )
     original_estimated_hours: Mapped[float | None] = mapped_column(
         Numeric(8, 2), nullable=True
@@ -126,6 +128,15 @@ class Task(Base):
         foreign_keys="[TaskDependency.task_id]",
         back_populates="task",
         cascade="all, delete-orphan",
+    )
+    task_time_entries: Mapped[list["TimeEntry"]] = relationship(
+        "TimeEntry", foreign_keys="[TimeEntry.task_id]", back_populates="task"
+    )
+    task_work_sessions: Mapped[list["TaskWorkSession"]] = relationship(
+        "TaskWorkSession", foreign_keys="[TaskWorkSession.task_id]", back_populates="task"
+    )
+    rework_history: Mapped[list["TaskReworkHistory"]] = relationship(
+        "TaskReworkHistory", foreign_keys="[TaskReworkHistory.task_id]", back_populates="task"
     )
 
     def __repr__(self) -> str:

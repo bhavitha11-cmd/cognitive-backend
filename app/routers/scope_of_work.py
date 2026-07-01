@@ -30,7 +30,8 @@ def _get_service(
     return ScopeService(db, current_user_id=uid)
 
 
-@router.get("", response_model=APIResponse)
+@router.get("", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Settings", "view"))])
 def list_scopes(
     department_category: str | None = Query(None, description="Filter by department category"),
     include_inactive: bool = Query(False, description="Include inactive records"),
@@ -65,7 +66,8 @@ def create_scope(scope_in: ScopeCreate, service=Depends(_get_service)):
     )
 
 
-@router.get("/{id}", response_model=APIResponse)
+@router.get("/{id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Settings", "view"))])
 def get_scope(id: uuid.UUID, service=Depends(_get_service)):
     try:
         scope = service.get_by_id(id)

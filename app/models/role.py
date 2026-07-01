@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Boolean, Text, Integer, ForeignKey, Index, func
+from sqlalchemy import CheckConstraint, DateTime, String, Boolean, Text, Integer, ForeignKey, Index, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -15,6 +15,11 @@ class Role(Base):
 
     __table_args__ = (
         Index("ix_roles_is_active", "is_active"),
+        CheckConstraint("parent_role_id != id", name="ck_role_no_self_parent"),
+        CheckConstraint(
+            "data_access_level IN ('FULL', 'MANAGED', 'TEAM', 'SELF')",
+            name="ck_role_data_access_level",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

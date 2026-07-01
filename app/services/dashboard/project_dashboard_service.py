@@ -64,9 +64,11 @@ class ProjectDashboardService:
         )
 
     def get_charts(self, project_id: UUID) -> ProjectCharts:
-        project = self.db.get(Project, project_id)
+        project = self.db.scalar(
+            select(Project).where(Project.id == project_id, Project.is_active == True)
+        )
         if not project:
-            raise ValueError("Project not found")
+            raise ValueError("Project not found or inactive")
 
         # 1. Task Status Counts
         statuses_query = self.db.execute(

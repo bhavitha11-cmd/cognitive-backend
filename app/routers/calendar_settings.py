@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -63,6 +64,7 @@ class CalendarSettingsUpdate(BaseModel):
 @router.get(
     "",
     response_model=APIResponse,
+    dependencies=[Depends(require_permission("CalendarSettings", "view"))],
 )
 def get_settings(db: Session = Depends(get_db)):
     settings = db.scalar(select(CalendarSettings))
@@ -87,6 +89,17 @@ def update_settings(
     data: CalendarSettingsUpdate,
     db: Session = Depends(get_db),
 ):
+    if data.office_start_time and not re.match(r'^\d{2}:\d{2}$', data.office_start_time):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="office_start_time must be in HH:MM format",
+        )
+    if data.office_end_time and not re.match(r'^\d{2}:\d{2}$', data.office_end_time):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="office_end_time must be in HH:MM format",
+        )
+
     settings = db.scalar(select(CalendarSettings))
     if not settings:
         raise HTTPException(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -9,24 +10,24 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class LeaveTypeCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=10)
     name: str = Field(..., min_length=1, max_length=100)
-    days_per_year: float = 0
+    days_per_year: float = Field(0, ge=0, le=366)
     is_paid: bool = True
     is_carry_forward: bool = False
-    max_carry_forward_days: float = 0
+    max_carry_forward_days: float = Field(0, ge=0, le=366)
     requires_approval: bool = True
-    color: str = "#3B82F6"
+    color: str = Field("#3B82F6", max_length=7)
     description: str | None = None
 
 
 class LeaveTypeUpdate(BaseModel):
     code: str | None = Field(None, min_length=1, max_length=10)
     name: str | None = Field(None, min_length=1, max_length=100)
-    days_per_year: float | None = None
+    days_per_year: float | None = Field(None, ge=0, le=366)
     is_paid: bool | None = None
     is_carry_forward: bool | None = None
-    max_carry_forward_days: float | None = None
+    max_carry_forward_days: float | None = Field(None, ge=0, le=366)
     requires_approval: bool | None = None
-    color: str | None = None
+    color: str | None = Field(None, max_length=7)
     description: str | None = None
     is_active: bool | None = None
 
@@ -68,7 +69,7 @@ class LeaveRequestCreate(BaseModel):
     leave_type_id: uuid.UUID
     from_date: date
     to_date: date
-    reason: str | None = None
+    reason: str | None = Field(None, max_length=1000)
 
     @model_validator(mode="after")
     def check_dates(self) -> "LeaveRequestCreate":
@@ -78,13 +79,13 @@ class LeaveRequestCreate(BaseModel):
 
 
 class LeaveRequestUpdate(BaseModel):
-    reason: str | None = None
+    reason: str | None = Field(None, max_length=1000)
 
 
 class LeaveApprovalRequest(BaseModel):
-    action: str = Field(..., description="APPROVED or REJECTED")
-    rejection_reason: str | None = None
-    hr_notes: str | None = None
+    action: Literal["APPROVED", "REJECTED"]
+    rejection_reason: str | None = Field(None, max_length=1000)
+    hr_notes: str | None = Field(None, max_length=1000)
 
 
 class LeaveRequestResponse(BaseModel):

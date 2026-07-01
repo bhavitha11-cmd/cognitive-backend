@@ -3,6 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import APIResponse
@@ -11,7 +13,7 @@ from app.schemas.common import APIResponse
 class WorkSessionCreate(BaseModel):
     task_id: uuid.UUID
     project_id: uuid.UUID
-    session_type: str = Field(default="REGULAR", max_length=20)
+    session_type: Literal["REGULAR", "OVERTIME", "TRAINING", "MEETING"] = "REGULAR"
 
 
 class WorkSessionPause(BaseModel):
@@ -20,8 +22,8 @@ class WorkSessionPause(BaseModel):
 
 class WorkSessionUpdate(BaseModel):
     end_time: datetime | None = None
-    remarks: str | None = None
-    pause_reason: str | None = None
+    remarks: str | None = Field(None, max_length=500)
+    pause_reason: str | None = Field(None, max_length=500)
 
 
 class WorkSessionRead(BaseModel):

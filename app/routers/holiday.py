@@ -76,6 +76,9 @@ def check_holiday_date(
     )
 
 
+VALID_SORT_COLUMNS = {"date", "name", "holiday_type", "created_at"}
+
+
 @router.get(
     "",
     response_model=APIResponse,
@@ -94,6 +97,17 @@ def list_holidays(
     sort_order: str = Query("asc"),
     service=Depends(_get_service),
 ):
+    if sort_by not in VALID_SORT_COLUMNS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"sort_by must be one of {sorted(VALID_SORT_COLUMNS)}",
+        )
+    if sort_order.lower() not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="sort_order must be 'asc' or 'desc'",
+        )
+    sort_order = sort_order.lower()
     items, total = service.get_all(
         skip=skip,
         limit=limit,

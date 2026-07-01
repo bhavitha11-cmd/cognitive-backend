@@ -1,4 +1,5 @@
 import uuid
+from collections import deque
 from datetime import date, timedelta, datetime
 
 from fastapi import HTTPException
@@ -99,7 +100,7 @@ class PlanningService:
             )
             .where(TaskAssignment.employee_id == employee_id)
             .where(
-                (TaskAssignment.planned_start_date <= to_date) |
+                (TaskAssignment.planned_start_date <= to_date) &
                 (TaskAssignment.planned_end_date >= from_date)
             )
         ).all()
@@ -277,10 +278,10 @@ class PlanningService:
                 dependents.setdefault(d.depends_on_task_id, []).append(d.task_id)
                 in_degree[d.task_id] = in_degree.get(d.task_id, 0) + 1
 
-        queue = [t_id for t_id, deg in in_degree.items() if deg == 0]
+        queue = deque(t_id for t_id, deg in in_degree.items() if deg == 0)
         sorted_tasks = []
         while queue:
-            t_id = queue.pop(0)
+            t_id = queue.popleft()
             sorted_tasks.append(task_dict[t_id])
             for dep_id in dependents.get(t_id, []):
                 in_degree[dep_id] -= 1

@@ -53,10 +53,10 @@ class IdleClassification(Base):
         nullable=False,
     )
 
-    employee: Mapped[Employee] = relationship(
+    employee: Mapped["Employee"] = relationship(
         "Employee", foreign_keys=[employee_id]
     )
-    reason: Mapped[IdleReasonMaster] = relationship(
+    reason: Mapped["IdleReasonMaster"] = relationship(
         "IdleReasonMaster", foreign_keys=[reason_id]
     )
 

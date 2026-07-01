@@ -133,3 +133,31 @@ def delayed_tasks(service=Depends(_get_service)):
         message="Delayed tasks retrieved",
         data={"tasks": [t.model_dump() for t in tasks]},
     )
+
+
+@router.get(
+    "/pending-schedule-reviews",
+    response_model=APIResponse,
+    summary="Pending Schedule Reviews widget",
+    dependencies=[Depends(require_permission("Projects", "view"))],
+)
+def pending_schedule_reviews(service=Depends(_get_service)):
+    """Dashboard widget: Pending Schedule Reviews.
+
+    Returns PENDING schedule reviews for the currently authenticated user.
+    - Project Managers see only the reviews assigned to them.
+    - Admins see all pending reviews across all project managers.
+
+    Resolved reviews (APPLIED / REJECTED) are excluded from this widget.
+    They remain in the audit log and can be fetched via
+    GET /api/v1/schedule-reviews/history.
+    """
+    reviews = service.get_pending_schedule_reviews()
+    return APIResponse(
+        success=True,
+        message="Pending schedule reviews retrieved",
+        data={
+            "reviews": [r.model_dump(mode="json") for r in reviews],
+            "count": len(reviews),
+        },
+    )

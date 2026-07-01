@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -214,7 +214,7 @@ class TeamLeaderDashboardService:
 
         # 2. Employee Productivity today (using KPICalculator in batch)
         employee_productivity = []
-        now_utc = datetime.utcnow()
+        now_utc = datetime.now(timezone.utc)
         rule = PolicyResolver.get_rule(self.db)
         
         batch_raw_metrics = KPICalculator.calculate_raw_metrics_batch(self.db, member_ids, today, now_utc)

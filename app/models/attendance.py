@@ -48,15 +48,15 @@ class Attendance(Base):
         DateTime(timezone=True), nullable=True
     )
     total_hours: Mapped[float] = mapped_column(
-        Numeric(5, 2), default=0, nullable=False
+        Numeric(5, 2), default=0, server_default="0", nullable=False
     )
     status: Mapped[str] = mapped_column(
         String(20), default="PRESENT", nullable=False
     )
     is_late: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    late_by_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    late_by_minutes: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     overtime_hours: Mapped[float] = mapped_column(
-        Numeric(5, 2), default=0, nullable=False
+        Numeric(5, 2), default=0, server_default="0", nullable=False
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     marked_by: Mapped[uuid.UUID | None] = mapped_column(

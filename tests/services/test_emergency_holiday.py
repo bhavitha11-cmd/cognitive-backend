@@ -43,10 +43,16 @@ def test_create_emergency_holiday_skips_recalculation(db, service):
         
     db.add.side_effect = mock_add
 
-    with patch("app.services.calendar_service.CalendarService.trigger_holiday_recalculation") as mock_recalc:
+    with patch("app.services.calendar_service.CalendarService.trigger_holiday_recalculation") as mock_recalc, \
+         patch(
+             "app.services.pending_schedule_review_service.PendingScheduleReviewService"
+             ".create_reviews_for_holiday"
+         ):
         res = service.create(data)
         assert res.name == "Emergency Flood"
         assert res.holiday_type == "EMERGENCY"
+        # Calendar recalculation must NOT be called for EMERGENCY holidays —
+        # the PSR queue is used instead.
         mock_recalc.assert_not_called()
 
 

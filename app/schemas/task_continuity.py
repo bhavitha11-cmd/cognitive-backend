@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from pydantic import BaseModel, Field
-from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, Literal, Optional
 
 
 class TaskRiskResponse(BaseModel):
@@ -27,16 +27,17 @@ class TaskRiskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ManagerDecisionCreate(BaseModel):
-    decision: str = Field(..., description="CONTINUE, PAUSE, REASSIGN, SPLIT, or DELEGATE")
+    decision: Literal["CONTINUE", "PAUSE", "REASSIGN", "SPLIT", "DELEGATE"]
     reassign_to_id: Optional[uuid.UUID] = Field(None, description="Employee ID to reassign or split to")
     delegate_id: Optional[uuid.UUID] = Field(None, description="Employee ID to delegate execution to")
     reason: Optional[str] = Field(None, description="Reason for the decision")
-    pause_classification: Optional[str] = Field(None, description="Classification of the pause reason (e.g. Waiting Customer, Waiting Information, Waiting Review, Leave, Blocked, Dependency)")
+    pause_classification: Optional[Literal[
+        "Waiting Customer", "Waiting Information", "Waiting Review", "Leave", "Blocked", "Dependency"
+    ]] = Field(None, description="Classification of the pause reason")
 
 
 class ManagerDecisionResponse(BaseModel):
@@ -48,8 +49,7 @@ class ManagerDecisionResponse(BaseModel):
     details: Optional[dict] = None
     decided_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskDelegationResponse(BaseModel):
@@ -66,8 +66,7 @@ class TaskDelegationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskPauseHistoryResponse(BaseModel):
@@ -80,8 +79,7 @@ class TaskPauseHistoryResponse(BaseModel):
     reason: Optional[str] = None
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskTransferHistoryResponse(BaseModel):
@@ -97,8 +95,7 @@ class TaskTransferHistoryResponse(BaseModel):
     manager_id: Optional[uuid.UUID] = None
     transfer_type: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ReassignmentWidgetRow(BaseModel):

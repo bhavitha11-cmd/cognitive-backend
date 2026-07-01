@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 import uuid
 
@@ -11,6 +12,8 @@ from app.schemas.planning import (
     EmployeeScheduleCreate, EmployeeScheduleUpdate, TaskDependencyCreate,
 )
 from app.services.planning_service import PlanningService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/planning",
@@ -38,7 +41,13 @@ def create_schedule(
     data: EmployeeScheduleCreate,
     service: PlanningService = Depends(_get_service),
 ):
-    result = service.create_schedule(data)
+    try:
+        result = service.create_schedule(data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating schedule: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
     return APIResponse(success=True, message="Schedule created", data={"schedule": result.model_dump()})
 
 
@@ -49,7 +58,13 @@ def update_schedule(
     data: EmployeeScheduleUpdate,
     service: PlanningService = Depends(_get_service),
 ):
-    result = service.update_schedule(schedule_id, data)
+    try:
+        result = service.update_schedule(schedule_id, data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating schedule {schedule_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
     return APIResponse(success=True, message="Schedule updated", data={"schedule": result.model_dump()})
 
 
@@ -87,7 +102,13 @@ def create_dependency(
     data: TaskDependencyCreate,
     service: PlanningService = Depends(_get_service),
 ):
-    result = service.create_dependency(data)
+    try:
+        result = service.create_dependency(data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating dependency: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
     return APIResponse(success=True, message="Dependency created", data={"dependency": result.model_dump()})
 
 
@@ -97,7 +118,13 @@ def delete_dependency(
     dependency_id: uuid.UUID,
     service: PlanningService = Depends(_get_service),
 ):
-    service.delete_dependency(dependency_id)
+    try:
+        service.delete_dependency(dependency_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting dependency {dependency_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
     return APIResponse(success=True, message="Dependency deleted")
 
 
@@ -139,5 +166,11 @@ def schedule_project(
     project_id: uuid.UUID,
     service: PlanningService = Depends(_get_service),
 ):
-    result = service.schedule_project(project_id)
+    try:
+        result = service.schedule_project(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error scheduling project {project_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
     return APIResponse(success=True, message="Project scheduled successfully", data=result.model_dump())

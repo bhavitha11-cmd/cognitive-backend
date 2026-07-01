@@ -306,6 +306,16 @@ def update_leave_request(
     data: LeaveRequestUpdate,
     service: LeaveService = Depends(_get_service),
 ):
+    # Ownership check: only the owner may update their own leave request
+    try:
+        existing = service.get_request(id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    if existing.employee_id != service.current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only update your own leave requests",
+        )
     try:
         req = service.update_leave_request(id, data)
     except ValueError as e:
@@ -327,6 +337,16 @@ def cancel_leave_request(
     id: uuid.UUID,
     service: LeaveService = Depends(_get_service),
 ):
+    # Ownership check: only the owner may cancel their own leave request
+    try:
+        existing = service.get_request(id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    if existing.employee_id != service.current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only cancel your own leave requests",
+        )
     try:
         req = service.cancel_leave(id)
     except ValueError as e:

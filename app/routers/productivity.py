@@ -1,8 +1,11 @@
+import logging
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.database.session import get_db
 from app.dependencies import get_current_user
@@ -52,11 +55,13 @@ def get_today_productivity(
             message="Today's productivity KPIs retrieved successfully",
             data=data
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to calculate today's KPIs: {str(e)}"
-        )
+        logger.error(f"Unexpected error in get_today_productivity: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred")
 
 
 @router.get("/employee/{employee_id}", response_model=APIResponse)
@@ -83,11 +88,13 @@ def get_employee_productivity(
             message="Employee range metrics retrieved successfully",
             data=data
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to retrieve range metrics: {str(e)}"
-        )
+        logger.error(f"Unexpected error in get_employee_productivity: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred")
 
 
 @router.get("/timeline", response_model=APIResponse)
@@ -111,11 +118,13 @@ def get_employee_timeline(
             message="Timeline retrieved successfully",
             data={"timeline": timeline}
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to rebuild timeline: {str(e)}"
-        )
+        logger.error(f"Unexpected error in get_employee_timeline: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred")
 
 
 @router.get("/reasons", response_model=APIResponse)
@@ -131,14 +140,16 @@ def get_active_idle_reasons(
             message="Idle reasons retrieved successfully",
             data={"reasons": [IdleReasonResponse.model_validate(r).model_dump() for r in reasons]}
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to load idle reasons: {str(e)}"
-        )
+        logger.error(f"Unexpected error in get_active_idle_reasons: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred")
 
 
-@router.post("/idle-classifications", response_model=APIResponse)
+@router.post("/idle-classifications", response_model=APIResponse, status_code=status.HTTP_201_CREATED)
 def create_idle_classification(
     body: IdleClassificationCreate,
     service: WorkforceProductivityService = Depends(_get_service),
@@ -164,9 +175,10 @@ def create_idle_classification(
             detail=str(val_err)
         )
     except Exception as e:
+        logger.error(f"Unexpected error in create_idle_classification: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal database error: {str(e)}"
+            detail="An internal error occurred"
         )
 
 
@@ -197,8 +209,10 @@ def get_workforce_metrics_report(
             message="Bulk workforce metrics report generated successfully",
             data={"report": report}
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to generate report: {str(e)}"
-        )
+        logger.error(f"Unexpected error in get_workforce_metrics_report: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred")

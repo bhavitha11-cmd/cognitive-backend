@@ -46,7 +46,7 @@ class TaskAssignment(Base):
         ForeignKey("employees.id", ondelete="SET NULL"),
         nullable=True,
     )
-    assigned_hours: Mapped[float] = mapped_column(Numeric(8, 2), default=0, nullable=False)
+    assigned_hours: Mapped[float] = mapped_column(Numeric(8, 2), default=0, server_default="0", nullable=False)
     planned_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     planned_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)

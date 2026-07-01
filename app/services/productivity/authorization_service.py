@@ -64,9 +64,6 @@ class AuthorizationService:
                     Department.is_active == True
                 )
             )
-            # Handle mock DB return value in tests
-            if type(dept_head_id).__name__ in ("MagicMock", "Mock") or hasattr(dept_head_id, "_mock_self") or hasattr(dept_head_id, "assert_called"):
-                dept_head_id = None
             if dept_head_id == requester_id:
                 return True
 
@@ -88,12 +85,7 @@ class AuthorizationService:
                 )
             )
         )
-        # Handle mock DB return value in tests
-        if type(lead_val).__name__ in ("MagicMock", "Mock") or hasattr(lead_val, "_mock_self") or hasattr(lead_val, "assert_called"):
-            has_lead_match = False
-        else:
-            has_lead_match = lead_val is not None
-        if has_lead_match:
+        if lead_val is not None:
             return True
 
         return False

@@ -14,17 +14,17 @@ class TaskCreate(BaseModel):
     team_id: uuid.UUID | None = None
     parent_task_id: uuid.UUID | None = None
     title: str = Field(min_length=1, max_length=500)
-    description: str | None = None
+    description: str | None = Field(None, max_length=5000)
     scope_of_work_id: uuid.UUID | None = None
     department_category: str | None = None
     status: str = "NOT_STARTED"
     priority: str = "MEDIUM"
-    estimated_hours: float = 0
+    estimated_hours: float = Field(0, ge=0)
     planned_start_date: date | None = None
     planned_end_date: date | None = None
     received_date: date | None = None
     planned_delivery_date: date | None = None
-    remarks: str | None = None
+    remarks: str | None = Field(None, max_length=5000)
     assigned_employee_id: uuid.UUID | None = None
 
     @field_validator("department_category")
@@ -52,14 +52,14 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     task_code: str | None = Field(default=None, min_length=1, max_length=100)
     title: str | None = Field(default=None, min_length=1, max_length=500)
-    description: str | None = None
+    description: str | None = Field(None, max_length=5000)
     parent_task_id: uuid.UUID | None = None
     team_id: uuid.UUID | None = None
     scope_of_work_id: uuid.UUID | None = None
     department_category: str | None = None
     status: str | None = None
     priority: str | None = None
-    estimated_hours: float | None = None
+    estimated_hours: float | None = Field(None, ge=0)
     planned_start_date: date | None = None
     planned_end_date: date | None = None
     actual_start_date: date | None = None
@@ -67,8 +67,8 @@ class TaskUpdate(BaseModel):
     received_date: date | None = None
     planned_delivery_date: date | None = None
     actual_delivery_date: date | None = None
-    progress: float | None = None
-    remarks: str | None = None
+    progress: float | None = Field(None, ge=0, le=100)
+    remarks: str | None = Field(None, max_length=5000)
     is_active: bool | None = None
     assigned_employee_id: uuid.UUID | None = None
 
@@ -108,20 +108,20 @@ class TaskStatusUpdate(BaseModel):
 
 class TaskAssignmentCreate(BaseModel):
     employee_id: uuid.UUID
-    assigned_hours: float = 0
+    assigned_hours: float = Field(0, ge=0)
     planned_start_date: date | None = None
     planned_end_date: date | None = None
-    notes: str | None = None
+    notes: str | None = Field(None, max_length=5000)
 
 
 class TaskAssignmentUpdate(BaseModel):
-    assigned_hours: float | None = None
+    assigned_hours: float | None = Field(None, ge=0)
     status: str | None = None
     planned_start_date: date | None = None
     planned_end_date: date | None = None
     actual_start_date: date | None = None
     actual_end_date: date | None = None
-    notes: str | None = None
+    notes: str | None = Field(None, max_length=5000)
 
     @field_validator("status")
     @classmethod
@@ -206,6 +206,8 @@ class TaskListResponse(BaseModel):
     progress: float
     planned_start_date: date | None
     planned_end_date: date | None
+    actual_start_date: date | None = None
+    actual_end_date: date | None = None
     planned_delivery_date: date | None
     actual_delivery_date: date | None
     rework_count: int = 0

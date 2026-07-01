@@ -237,9 +237,27 @@ def get_daily_summary(
     summary_date: date | None = Query(default=None),
     service: WorkSessionService = Depends(_get_service),
 ):
+    # IDOR guard: non-management users can only view their own daily summary
+    target_id = employee_id or service.current_user_id
+    if str(target_id) != str(service.current_user_id):
+        # Require explicit management permission to view another employee's summary
+        from app.core.rbac import get_user_context, DataAccessLevel
+        from app.database.session import get_db as _get_db
+        # Access check via service's db session
+        from app.core.rbac import DataAccessLevel as _DAL
+        user_ctx = getattr(service, "_user_ctx", None)
+        # Fallback: use require_permission dependency at call time is not available here,
+        # so we resolve context inline from the service's db using current_user_id
+        from app.core.rbac import get_user_context as _get_ctx
+        ctx = _get_ctx(service.db, str(service.current_user_id))
+        if ctx.data_access_level == _DAL.SELF:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only view your own daily summary",
+            )
     try:
         summary = service.get_daily_summary(
-            employee_id=employee_id,
+            employee_id=target_id,
             summary_date=summary_date,
         )
     except ValueError as e:

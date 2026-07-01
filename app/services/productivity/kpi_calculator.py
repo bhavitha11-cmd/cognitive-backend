@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime, timezone, timedelta, time
 from typing import Any, Optional
 import uuid
@@ -12,13 +13,22 @@ from app.models.task import Task
 from app.models.task_assignment import TaskAssignment
 from app.models.task_continuity import TaskPauseHistory
 
-IST = timezone(timedelta(hours=5, minutes=30), name="IST")
+# Configurable local timezone — read from environment, default to Asia/Kolkata
+_LOCAL_TZ_NAME = os.environ.get("LOCAL_TIMEZONE", "Asia/Kolkata")
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo(_LOCAL_TZ_NAME)
+except Exception:
+    LOCAL_TZ = timezone(timedelta(hours=5, minutes=30))  # fallback IST
+
+# Keep IST as an alias for backward compatibility
+IST = LOCAL_TZ
 
 
 def get_day_boundaries_utc(query_date: date) -> tuple[datetime, datetime]:
-    """Convert a local query date in IST to UTC start and end boundaries."""
-    local_start = datetime.combine(query_date, time.min).replace(tzinfo=IST)
-    local_end = datetime.combine(query_date, time.max).replace(tzinfo=IST)
+    """Convert a local query date in the configured local timezone to UTC start and end boundaries."""
+    local_start = datetime.combine(query_date, time.min).replace(tzinfo=LOCAL_TZ)
+    local_end = datetime.combine(query_date, time.max).replace(tzinfo=LOCAL_TZ)
     return local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
 
 
@@ -477,10 +487,14 @@ class KPICalculator:
         paused = compiled.get("paused_time", {}).get("raw_seconds", 0)
         waiting = compiled.get("waiting_time", {}).get("raw_seconds", 0)
 
-        assert presence >= breaks, f"Invariant Violation: Presence ({presence}s) < Break ({breaks}s)"
-        assert presence >= productive, f"Invariant Violation: Presence ({presence}s) < Productive ({productive}s)"
-        assert org == presence - breaks, f"Invariant Violation: Org ({org}s) != Presence ({presence}s) - Break ({breaks}s)"
-        assert org == productive + idle + paused + waiting, f"Invariant Violation: Org ({org}s) != Productive ({productive}s) + Idle ({idle}s) + Paused ({paused}s) + Waiting ({waiting}s)"
+        if not (presence >= breaks):
+            raise ValueError(f"Invariant Violation: Presence ({presence}s) < Break ({breaks}s)")
+        if not (presence >= productive):
+            raise ValueError(f"Invariant Violation: Presence ({presence}s) < Productive ({productive}s)")
+        if not (org == presence - breaks):
+            raise ValueError(f"Invariant Violation: Org ({org}s) != Presence ({presence}s) - Break ({breaks}s)")
+        if not (org == productive + idle + paused + waiting):
+            raise ValueError(f"Invariant Violation: Org ({org}s) != Productive ({productive}s) + Idle ({idle}s) + Paused ({paused}s) + Waiting ({waiting}s)")
 
     @classmethod
     def compile_kpi_metrics(

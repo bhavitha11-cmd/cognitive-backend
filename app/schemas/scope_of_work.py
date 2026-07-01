@@ -10,7 +10,7 @@ class ScopeCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=200)
     department_category: str
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
 
     @field_validator("department_category")
     @classmethod
@@ -26,7 +26,7 @@ class ScopeUpdate(BaseModel):
     code: str | None = Field(None, min_length=1, max_length=50)
     name: str | None = Field(None, min_length=1, max_length=200)
     department_category: str | None = None
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     is_active: bool | None = None
 
     @field_validator("department_category")
@@ -44,7 +44,7 @@ class ScopeResponse(BaseModel):
     code: str
     name: str
     department_category: str
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     is_active: bool
     created_at: datetime | None = None
 

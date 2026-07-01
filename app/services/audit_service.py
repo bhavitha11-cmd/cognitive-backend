@@ -61,8 +61,7 @@ class AuditService:
             performed_at=datetime.now(timezone.utc),
         )
         db.add(entry)
-        db.commit()
-        db.refresh(entry)
+        db.flush()  # Changed from db.commit() - callers own the transaction boundary
 
         # Log to the console for real-time visibility
         detail_str = ""

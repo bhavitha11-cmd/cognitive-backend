@@ -1,5 +1,5 @@
 import uuid
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Token(BaseModel):
@@ -28,6 +28,8 @@ class PermissionDetail(BaseModel):
 
 
 class UserMeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     employee_id: uuid.UUID | None = None  # alias for id, explicit for frontend
     employee_code: str

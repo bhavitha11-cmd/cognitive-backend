@@ -34,6 +34,7 @@ from app.models.task_template import TaskTemplate
 from app.models.idle_reason_master import IdleReasonMaster
 from app.models.idle_classification import IdleClassification
 
+from app.models.pending_schedule_review import PendingScheduleReview
 from app.models.task_continuity import (
     TaskRisk,
     TaskPauseHistory,
@@ -75,6 +76,7 @@ __all__ = [
     "TaskTemplate",
     "IdleReasonMaster",
     "IdleClassification",
+    "PendingScheduleReview",
     "TaskRisk",
     "TaskPauseHistory",
     "TaskTransferHistory",

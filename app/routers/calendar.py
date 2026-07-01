@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -10,6 +10,8 @@ from app.database.session import get_db
 from app.dependencies import get_current_user, require_permission
 from app.schemas.common import APIResponse
 from app.services.working_day_engine import WorkingDayEngine
+
+VALID_EVENT_TYPES = {"holiday", "birthday", "anniversary", "company_event", "leave", "task_deadline", "task", "project"}
 
 router = APIRouter(
     prefix="/calendar",
@@ -33,6 +35,7 @@ def _get_service(
 @router.get(
     "/events",
     response_model=APIResponse,
+    dependencies=[Depends(require_permission("Calendar", "view"))],
 )
 def get_calendar_events(
     from_date: date = Query(...),
@@ -40,7 +43,25 @@ def get_calendar_events(
     types: str | None = Query(None, description="Comma-separated: holiday,birthday,task,project,company_event"),
     service=Depends(_get_service),
 ):
-    type_list = types.split(",") if types else None
+    if to_date < from_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="end date must be after start date",
+        )
+    if (to_date - from_date).days > 366:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Date range cannot exceed 366 days",
+        )
+    type_list = None
+    if types:
+        type_list = [t.strip() for t in types.split(",") if t.strip()]
+        invalid = set(type_list) - VALID_EVENT_TYPES
+        if invalid:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown event types: {invalid}. Valid types: {sorted(VALID_EVENT_TYPES)}",
+            )
     events = service.get_events(from_date, to_date, type_list)
     return APIResponse(
         success=True,

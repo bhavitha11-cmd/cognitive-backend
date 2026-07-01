@@ -3,17 +3,17 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import APIResponse
 
 
 class BreakStartRequest(BaseModel):
-    remarks: str | None = None
+    remarks: str | None = Field(None, max_length=500)
 
 
 class BreakEndRequest(BaseModel):
-    remarks: str | None = None
+    remarks: str | None = Field(None, max_length=500)
 
 
 class BreakRead(BaseModel):
@@ -25,7 +25,7 @@ class BreakRead(BaseModel):
     break_end: datetime | None = None
     duration_minutes: int
     date: date
-    remarks: str | None = None
+    remarks: str | None = Field(None, max_length=500)
     created_at: datetime
 
 

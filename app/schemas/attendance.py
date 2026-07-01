@@ -6,7 +6,7 @@ from datetime import date as date_type
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 VALID_STATUSES = {"PRESENT", "ABSENT", "HALF_DAY", "WFH", "ON_LEAVE", "HOLIDAY"}
 
@@ -29,13 +29,13 @@ def _validate_hhmm(value: Optional[str]) -> Optional[str]:
 class AttendanceRuleUpdate(BaseModel):
     office_start_time: Optional[str] = None
     office_end_time: Optional[str] = None
-    half_day_hours: Optional[float] = None
-    late_mark_after_minutes: Optional[int] = None
+    half_day_hours: Optional[float] = Field(None, ge=0, le=24)
+    late_mark_after_minutes: Optional[int] = Field(None, ge=0, le=1440)
     work_days: Optional[str] = None
-    required_productive_hours: Optional[float] = None
-    overtime_threshold_hours: Optional[float] = None
-    max_break_minutes: Optional[int] = None
-    min_break_minutes: Optional[int] = None
+    required_productive_hours: Optional[float] = Field(None, ge=0, le=24)
+    overtime_threshold_hours: Optional[float] = Field(None, ge=0, le=24)
+    max_break_minutes: Optional[int] = Field(None, ge=0, le=1440)
+    min_break_minutes: Optional[int] = Field(None, ge=0, le=1440)
 
     @field_validator("office_start_time", mode="before")
     @classmethod
@@ -71,7 +71,7 @@ class AttendanceMarkRequest(BaseModel):
     clock_in: Optional[datetime] = None
     clock_out: Optional[datetime] = None
     status: str = "PRESENT"
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(None, max_length=1000)
 
     @field_validator("status", mode="before")
     @classmethod
@@ -85,7 +85,7 @@ class AttendanceMarkRequest(BaseModel):
 
 class AttendanceBulkMarkRequest(BaseModel):
     date: date_type
-    records: list[AttendanceMarkRequest]
+    records: list[AttendanceMarkRequest] = Field(..., max_length=500)
 
 
 # ── Attendance Response schema ────────────────────────────────────────────────

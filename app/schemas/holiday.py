@@ -4,7 +4,7 @@ import uuid
 from datetime import date as date_type, datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 VALID_HOLIDAY_TYPES = {
@@ -17,7 +17,7 @@ class HolidayCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     date: date_type
     holiday_type: str = Field(default="PUBLIC")
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     affects_working_days: bool | None = True
 
     @field_validator("holiday_type")
@@ -33,7 +33,7 @@ class HolidayUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     date: date_type | None = None
     holiday_type: str | None = None
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     is_active: bool | None = None
     affects_working_days: bool | None = None
 
@@ -120,5 +120,5 @@ class TaskDateOverride(BaseModel):
 
 
 class EmergencyHolidayApplyRequest(BaseModel):
-    project_updates: list[ProjectDateOverride] = Field(default_factory=list)
-    task_updates: list[TaskDateOverride] = Field(default_factory=list)
+    project_updates: list[ProjectDateOverride] = Field(default_factory=list, max_length=500)
+    task_updates: list[TaskDateOverride] = Field(default_factory=list, max_length=500)

@@ -29,12 +29,16 @@ def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(g
     return TaskTemplateService(db, current_user_id=uid)
 
 
+VALID_TEMPLATE_SORT_COLUMNS = {"created_at", "name", "updated_at"}
+
+
 class BulkStatusRequest(BaseModel):
     ids: list[uuid.UUID]
     is_active: bool
 
 
-@router.get("", response_model=APIResponse)
+@router.get("", response_model=APIResponse,
+            dependencies=[Depends(require_permission("TaskTemplate", "view"))])
 def list_task_templates(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -44,6 +48,17 @@ def list_task_templates(
     sort_order: str = Query("desc"),
     service=Depends(_get_service),
 ):
+    if sort_by not in VALID_TEMPLATE_SORT_COLUMNS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"sort_by must be one of {sorted(VALID_TEMPLATE_SORT_COLUMNS)}",
+        )
+    if sort_order.lower() not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="sort_order must be 'asc' or 'desc'",
+        )
+    sort_order = sort_order.lower()
     templates, total = service.get_all(
         skip=skip, limit=limit, search=search,
         is_active=is_active, sort_by=sort_by, sort_order=sort_order,
@@ -60,9 +75,11 @@ def list_task_templates(
     )
 
 
-@router.get("/search", response_model=APIResponse)
+@router.get("/search", response_model=APIResponse,
+            dependencies=[Depends(require_permission("TaskTemplate", "view"))])
 def search_task_templates(
-    q: str | None = Query(None),
+    q: str | None = Query(None, min_length=2, max_length=200),
+    limit: int = Query(default=20, le=100),
     service=Depends(_get_service),
 ):
     items = service.search(q=q)
@@ -73,7 +90,8 @@ def search_task_templates(
     )
 
 
-@router.get("/{id}", response_model=APIResponse)
+@router.get("/{id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("TaskTemplate", "view"))])
 def get_task_template(id: uuid.UUID, service=Depends(_get_service)):
     try:
         template = service.get_by_id(id)

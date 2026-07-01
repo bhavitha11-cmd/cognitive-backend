@@ -82,7 +82,7 @@ class TaskService:
         project = self._get_project(data.project_id)
         if not project:
             raise ValueError(f"Project with id {data.project_id} not found")
-        if hasattr(project, "status") and project.status not in ("Yet To Start", "In Progress", "YET TO START", "IN PROGRESS"):
+        if hasattr(project, "status") and project.status not in ("YET_TO_START", "IN_PROGRESS", "Yet To Start", "In Progress"):
             raise ValueError(
                 f"Cannot add tasks to a project with status '{project.status}'. "
                 "Project must be Yet To Start or In Progress."
@@ -468,26 +468,23 @@ class TaskService:
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _get_project(self, project_id: UUID):
-        try:
-            from app.models.project import Project
-            return self.db.get(Project, project_id)
-        except Exception:
-            return None
+        from app.models.project import Project
+        return self.db.get(Project, project_id)
 
     def _get_scope(self, scope_id: UUID):
-        try:
-            from app.models.scope_of_work import ScopeOfWork
-            return self.db.get(ScopeOfWork, scope_id)
-        except Exception:
-            return None
+        from app.models.scope_of_work import ScopeOfWork
+        return self.db.get(ScopeOfWork, scope_id)
 
     def _increment_project_task_count(self, project) -> None:
+        import logging
         try:
             if hasattr(project, "task_count") and project.task_count is not None:
                 project.task_count = (project.task_count or 0) + 1
                 self.db.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger(__name__).error(
+                f"Failed to increment project task count: {e}", exc_info=True
+            )
 
     def _trigger_project_recalc(self, project_id: UUID) -> None:
         """Fire-and-forget project metrics recalculation. Non-blocking on error."""
@@ -500,7 +497,7 @@ class TaskService:
                 "[TaskService] project_metrics recalc failed for project %s",
                 project_id, exc_info=True,
             )
-            self.db.rollback()
+            # DO NOT call db.rollback() here — transaction boundary is caller's responsibility
 
     def _build_assignment_response(self, assignment: TaskAssignment) -> TaskAssignmentResponse:
         emp_name = emp_code = None

@@ -350,6 +350,18 @@ class AttendanceService:
             self.db.flush()
 
         today = _now_utc().date()
+
+        # Guard: prevent overwriting an existing clock-in
+        existing = self.db.scalar(
+            select(Attendance).where(
+                Attendance.employee_id == employee_id,
+                Attendance.date == today,
+                Attendance.clock_in.isnot(None),
+            )
+        )
+        if existing:
+            raise ValueError("Already clocked in for today")
+
         record, is_new = self._get_or_create_record(employee_id, today)
 
         now = _now_utc()
@@ -403,15 +415,10 @@ class AttendanceService:
             )
         ).first()
 
-        if not record:
-            # Auto-create a record with only clock_out (edge case: forgot to clock in)
-            record = Attendance(
-                employee_id=employee_id,
-                date=today,
-                status="PRESENT",
-                marked_by=self.current_user_id,
+        if not record or record.clock_in is None:
+            raise ValueError(
+                "No clock-in record found for today. Please contact HR to record your attendance manually."
             )
-            self.db.add(record)
 
         now = _now_utc()
         record.clock_out = now

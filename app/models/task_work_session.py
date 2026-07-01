@@ -90,17 +90,17 @@ class TaskWorkSession(Base):
     employee: Mapped["Employee"] = relationship(
         "Employee",
         foreign_keys=[employee_id],
-        backref="work_sessions",
+        back_populates="work_sessions",
     )
     task: Mapped["Task"] = relationship(
         "Task",
         foreign_keys=[task_id],
-        backref="work_sessions",
+        back_populates="task_work_sessions",
     )
     project: Mapped["Project"] = relationship(
         "Project",
         foreign_keys=[project_id],
-        backref="work_sessions",
+        back_populates="project_work_sessions",
     )
     starter: Mapped["Employee | None"] = relationship(
         "Employee",

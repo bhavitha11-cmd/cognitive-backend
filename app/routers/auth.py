@@ -15,6 +15,7 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
 )
+from app.core.config import SUPER_ADMIN_CODES
 from app.dependencies import get_current_user
 from app.models.employee import Employee
 from app.models.employee_role import EmployeeRole
@@ -31,8 +32,6 @@ router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
 )
-
-SUPER_ADMIN_CODES = {"ADMIN", "CEO", "CHIEF_EXECUTIVE_OFFICER", "ADMINISTRATOR"}
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -138,17 +137,6 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     )
 
 
-@router.post("/refresh", response_model=APIResponse)
-def refresh_token(refresh_token: str = None, db: Session = Depends(get_db)):
-    """Issue a new access token using a valid refresh token."""
-    from pydantic import BaseModel as _BM
-
-    class _Body(_BM):
-        refresh_token: str
-
-    raise HTTPException(status_code=400, detail="Use POST body with refresh_token field")
-
-
 class RefreshRequest(BaseModel):
     refresh_token: str
 
@@ -175,22 +163,38 @@ def token_refresh(request: Request, body: RefreshRequest, db: Session = Depends(
     except jwt.exceptions.InvalidTokenError:
         raise credentials_exc
 
-    # Reject if this refresh token has already been revoked (e.g. user logged out)
+    # Reject if this refresh token has no JTI claim or has already been revoked
     jti = payload.get("jti")
-    if jti:
-        from app.models.revoked_token import RevokedToken
-        if db.scalar(select(RevokedToken).where(RevokedToken.jti == jti)):
-            raise credentials_exc
+    if not jti:
+        raise credentials_exc  # Reject tokens without JTI claim
+
+    from app.models.revoked_token import RevokedToken
+    if db.scalar(select(RevokedToken).where(RevokedToken.jti == jti)):
+        raise credentials_exc
 
     employee = db.get(Employee, UUID(user_id))
     if not employee or not employee.is_active:
         raise credentials_exc
 
+    # Revoke the old refresh token (refresh token rotation)
+    old_revoked = RevokedToken(
+        jti=jti,
+        revoked_at=datetime.now(timezone.utc),
+        expires_at=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc),
+    )
+    db.add(old_revoked)
+    db.flush()  # Persist revocation before issuing new tokens
+
+    # Issue new access token and new refresh token (rotation)
     new_access = create_access_token(subject=employee.id)
+    new_refresh = create_refresh_token(subject=employee.id)
+
+    db.commit()
+
     return APIResponse(
         success=True,
         message="Token refreshed",
-        data={"access_token": new_access, "token_type": "bearer"},
+        data={"access_token": new_access, "refresh_token": new_refresh, "token_type": "bearer"},
     )
 
 
@@ -208,11 +212,12 @@ def _revoke_token_if_valid(token_str: str, db, token_type: str | None = None) ->
             already = db.scalar(select(RevokedToken).where(RevokedToken.jti == jti))
             if not already:
                 db.add(RevokedToken(jti=jti, expires_at=datetime.fromtimestamp(exp, tz=timezone.utc)))
-    except Exception:
-        pass  # already expired / invalid — nothing to revoke
+    except jwt.InvalidTokenError:
+        pass  # Token already invalid/expired — nothing to revoke
 
 
 @router.post("/logout", response_model=APIResponse)
+@limiter.limit("20/minute")
 def logout(
     request: Request,
     body: LogoutRequest = None,
@@ -287,7 +292,9 @@ def change_password(
 
 
 @router.get("/me", response_model=APIResponse)
+@limiter.limit("60/minute")
 def get_me(
+    request: Request,
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

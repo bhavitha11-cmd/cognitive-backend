@@ -7,13 +7,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.config import settings
+from app.core.config import settings, SUPER_ADMIN_CODES
 from app.core.security import decode_token
 from app.database.session import get_db
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
-
-SUPER_ADMIN_CODES = {"ADMIN", "CEO", "CHIEF_EXECUTIVE_OFFICER", "ADMINISTRATOR"}
 
 
 def get_current_user(
@@ -38,15 +36,17 @@ def get_current_user(
 
     # Check if token has been revoked
     jti = payload.get("jti")
-    if jti:
-        from app.models.revoked_token import RevokedToken
-        revoked = db.scalar(select(RevokedToken).where(RevokedToken.jti == jti))
-        if revoked:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has been revoked",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+    if not jti:
+        raise credentials_exception  # Reject tokens without JTI claim
+
+    from app.models.revoked_token import RevokedToken
+    revoked = db.scalar(select(RevokedToken).where(RevokedToken.jti == jti))
+    if revoked:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     return user_id
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.database.session import get_db
 from app.dependencies import get_current_user, require_permission
@@ -100,9 +103,12 @@ def resolve_task_risk(
         decision = service.resolve_task_risk(risk_id, manager_id, decision_data)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
+        logger.error(f"Error resolving task risk {risk_id}: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An internal error occurred"
         )
 
     return APIResponse(

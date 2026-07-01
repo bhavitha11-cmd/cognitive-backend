@@ -48,13 +48,14 @@ class BreakService:
                 "You must be clocked in before taking a break"
             )
 
-        # Check no active break already
+        # Check no active break already (with row lock to prevent race condition)
         active_break = self.db.scalar(
             select(EmployeeBreak).where(
                 EmployeeBreak.employee_id == employee_id,
                 EmployeeBreak.date == today,
                 EmployeeBreak.break_end.is_(None),
             )
+            .with_for_update()  # Lock the row to prevent concurrent duplicate breaks
         )
         if active_break:
             raise ValueError("You already have an active break. End it first.")

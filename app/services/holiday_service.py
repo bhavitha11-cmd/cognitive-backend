@@ -95,7 +95,14 @@ class HolidayService:
             },
         )
 
-        if holiday.holiday_type != "EMERGENCY":
+        if holiday.holiday_type == "EMERGENCY":
+            # Create one Pending Schedule Review per affected active project
+            # so each Project Manager can review and decide on their own schedule.
+            from app.services.pending_schedule_review_service import PendingScheduleReviewService
+            PendingScheduleReviewService(
+                self.db, self.current_user_id
+            ).create_reviews_for_holiday(holiday.id)
+        else:
             CalendarService.trigger_holiday_recalculation(self.db, holiday.id, "CREATE")
 
         return HolidayResponse.model_validate(holiday)
@@ -166,7 +173,7 @@ class HolidayService:
 
         holiday.is_active = False
         holiday.updated_by = self.current_user_id
-        self.db.commit()
+        self.db.flush()  # Flush the delete but don't commit yet
 
         AuditService.log(
             self.db, "holiday", holiday.id, "DELETE",
@@ -174,7 +181,10 @@ class HolidayService:
             old_value=old_values,
         )
 
+        # Run recalculation BEFORE committing so everything is atomic
         CalendarService.trigger_holiday_recalculation(self.db, holiday.id, "DELETE")
+
+        self.db.commit()  # Commit delete + recalculation atomically
 
     def toggle_active(self, id: uuid.UUID) -> HolidayResponse:
         holiday = self.db.get(Holiday, id)
@@ -194,6 +204,14 @@ class HolidayService:
         )
 
         CalendarService.trigger_holiday_recalculation(self.db, holiday.id, action)
+
+        # When an Emergency Holiday is deactivated, cancel any open reviews so
+        # they no longer appear on Project Managers' dashboards.
+        if not holiday.is_active and holiday.holiday_type == "EMERGENCY":
+            from app.services.pending_schedule_review_service import PendingScheduleReviewService
+            PendingScheduleReviewService(
+                self.db, self.current_user_id
+            ).cancel_reviews_for_holiday(holiday.id)
 
         return HolidayResponse.model_validate(holiday)
 
@@ -340,7 +358,8 @@ class HolidayService:
                 dep_info = f"Depends on: {', '.join(dep_codes)}" if dep_codes else None
 
                 affected_tasks.append({
-                    "task_id": task.id,
+                    "task_id": str(task.id),
+                    "project_id": str(task.project_id),
                     "task_name": task.title,
                     "assigned_employee_name": assignee_name,
                     "current_status": task.status,
@@ -420,10 +439,19 @@ class HolidayService:
                 if t_start and t_end and t_start > t_end:
                     raise ValueError(f"Task {task.task_code} planned start date cannot be after its planned end date")
 
-                if t_start and not WorkingDayEngine.is_working_day(t_start, self.db):
-                    raise ValueError(f"Task {task.task_code} start date {t_start} must be a working day")
-                if t_end and not WorkingDayEngine.is_working_day(t_end, self.db):
-                    raise ValueError(f"Task {task.task_code} end date {t_end} must be a working day")
+                # Only validate if the date is actually being changed by this request
+                if (
+                    t_update.planned_start_date
+                    and t_update.planned_start_date != task.planned_start_date
+                    and not WorkingDayEngine.is_working_day(t_update.planned_start_date, self.db)
+                ):
+                    raise ValueError(f"Task {task.task_code} start date {t_update.planned_start_date} must be a working day")
+                if (
+                    t_update.planned_end_date
+                    and t_update.planned_end_date != task.planned_end_date
+                    and not WorkingDayEngine.is_working_day(t_update.planned_end_date, self.db)
+                ):
+                    raise ValueError(f"Task {task.task_code} end date {t_update.planned_end_date} must be a working day")
 
             # 4. Update Projects
             for p_update in data.project_updates:
@@ -491,11 +519,16 @@ class HolidayService:
             for pid in unique_project_ids:
                 ProjectMetricsService.recalculate(self.db, pid)
 
-            self.db.commit()
+            self.db.flush()
             return {"success": True, "message": "Emergency holiday shifts applied successfully"}
+        except ValueError as e:
+            self.db.rollback()
+            raise  # Let the router handle this as HTTP 400
         except Exception as e:
             self.db.rollback()
-            raise e
+            import logging
+            logging.getLogger(__name__).error(f"apply_emergency_holiday failed: {e}", exc_info=True)
+            raise
 
     def reject_emergency_holiday(self, holiday_id: uuid.UUID) -> dict:
         holiday = self.db.get(Holiday, holiday_id)

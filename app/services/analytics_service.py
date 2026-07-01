@@ -1,10 +1,11 @@
-from datetime import date, datetime, timedelta
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy import select, func, and_, case
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.models.client import Client
 from app.models.project import Project
 from app.models.task import Task
@@ -30,14 +31,54 @@ class AnalyticsService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_dashboard_stats(self) -> DashboardStats:
-        now = datetime.now()
+    def get_dashboard_stats(self, current_user_id: uuid.UUID | None = None) -> DashboardStats:
+        from app.core.rbac import DataAccessLevel
+        from app.services.dashboard.dashboard_common_service import DashboardCommonService
+
+        now = datetime.now(timezone.utc)
         today = now.date()
 
-        total_clients = self.db.scalar(select(func.count(Client.id)).where(Client.is_active == True)) or 0
-        total_projects = self.db.scalar(select(func.count(Project.id)).where(Project.is_active == True)) or 0
-        active_projects = self.db.scalar(select(func.count(Project.id)).where(Project.is_active == True, Project.status.in_(["In Progress", "On Hold"]))) or 0
-        completed_projects = self.db.scalar(select(func.count(Project.id)).where(Project.status == "Completed")) or 0
+        # Resolve scoped employee/project IDs for RBAC
+        user_ctx = None
+        if current_user_id is not None:
+            from app.core.rbac import get_user_context
+            user_ctx = get_user_context(self.db, str(current_user_id))
+
+        scoped_employee_ids = DashboardCommonService.get_scoped_employee_ids(self.db, user_ctx) if user_ctx else None
+
+        # Scoped project IDs for TEAM/SELF access
+        scoped_project_ids = None
+        if user_ctx and user_ctx.data_access_level in (DataAccessLevel.TEAM, DataAccessLevel.SELF):
+            from app.models.task_assignment import TaskAssignment as TA
+            assigned_project_ids = self.db.scalars(
+                select(Task.project_id)
+                .join(TA, TA.task_id == Task.id)
+                .where(TA.employee_id == user_ctx.employee_id)
+                .distinct()
+            ).all()
+            scoped_project_ids = list(assigned_project_ids) if assigned_project_ids else []
+
+        # FIX 6: total_clients = ALL clients; active_clients = only active
+        total_clients = self.db.scalar(select(func.count(Client.id))) or 0
+        active_clients = self.db.scalar(select(func.count(Client.id)).where(Client.is_active == True)) or 0
+
+        # Project counts — scoped for TEAM/SELF
+        proj_stmt_base = select(func.count(Project.id)).where(Project.is_active == True)
+        if scoped_project_ids is not None:
+            proj_stmt_base = select(func.count(Project.id)).where(
+                Project.is_active == True, Project.id.in_(scoped_project_ids)
+            )
+
+        total_projects = self.db.scalar(proj_stmt_base) or 0
+        active_projects_stmt = select(func.count(Project.id)).where(Project.is_active == True, Project.status.in_(["In Progress", "On Hold"]))
+        completed_projects_stmt = select(func.count(Project.id)).where(Project.status == "Completed")
+        if scoped_project_ids is not None:
+            active_projects_stmt = active_projects_stmt.where(Project.id.in_(scoped_project_ids))
+            completed_projects_stmt = completed_projects_stmt.where(Project.id.in_(scoped_project_ids))
+        active_projects = self.db.scalar(active_projects_stmt) or 0
+        completed_projects = self.db.scalar(completed_projects_stmt) or 0
+
+        # Task counts
         total_tasks = self.db.scalar(select(func.count(Task.id)).where(Task.is_active == True)) or 0
         pending_tasks = self.db.scalar(select(func.count(Task.id)).where(Task.status == "NOT_STARTED", Task.is_active == True)) or 0
         in_progress_tasks = self.db.scalar(select(func.count(Task.id)).where(Task.status == "IN_PROGRESS", Task.is_active == True)) or 0
@@ -49,7 +90,14 @@ class AnalyticsService:
                 Task.is_active == True,
             )
         ) or 0
-        total_employees = self.db.scalar(select(func.count(Employee.id)).where(Employee.is_active == True)) or 0
+
+        # Employee counts — scoped for TEAM/SELF
+        emp_stmt = select(func.count(Employee.id)).where(Employee.is_active == True)
+        if scoped_employee_ids is not None:
+            emp_stmt = select(func.count(Employee.id)).where(
+                Employee.is_active == True, Employee.id.in_(scoped_employee_ids)
+            )
+        total_employees = self.db.scalar(emp_stmt) or 0
 
         present_today = self.db.scalar(
             select(func.count(Attendance.id)).where(Attendance.date == today, Attendance.status == "PRESENT")
@@ -66,7 +114,7 @@ class AnalyticsService:
 
         return DashboardStats(
             total_clients=total_clients,
-            active_clients=self.db.scalar(select(func.count(Client.id)).where(Client.is_active == True)) or 0,
+            active_clients=active_clients,
             total_projects=total_projects,
             active_projects=active_projects,
             completed_projects=completed_projects,
@@ -88,23 +136,37 @@ class AnalyticsService:
             select(Project).where(Project.is_active == True).order_by(Project.estimated_hours.desc())
         ).all()
 
+        # FIX 4: Batch pre-fetch actual hours and task counts (no N+1)
+        hours_result = self.db.execute(
+            select(TimeEntry.project_id, func.sum(TimeEntry.hours_spent))
+            .where(TimeEntry.status == "APPROVED")
+            .group_by(TimeEntry.project_id)
+        ).all()
+        hours_by_project = {str(row[0]): float(row[1] or 0) for row in hours_result}
+
+        task_counts_result = self.db.execute(
+            select(
+                Task.project_id,
+                func.count(Task.id).label("total"),
+                func.count(case((Task.status == "COMPLETED", 1))).label("completed")
+            )
+            .group_by(Task.project_id)
+        ).all()
+        task_data = {str(row[0]): {"total": row[1], "completed": row[2]} for row in task_counts_result}
+
         result = []
         total_est = 0.0
         total_act = 0.0
 
         for p in projects:
             est = float(p.estimated_hours or 0)
-            actual = self.db.scalar(
-                select(func.coalesce(func.sum(TimeEntry.hours_spent), 0))
-                .join(Task, TimeEntry.task_id == Task.id)
-                .where(Task.project_id == p.id, TimeEntry.status != "REJECTED")
-            ) or 0
-            actual = float(actual)
+            actual = hours_by_project.get(str(p.id), 0.0)
             total_est += est
             total_act += actual
 
-            task_count = self.db.scalar(select(func.count(Task.id)).where(Task.project_id == p.id, Task.is_active == True)) or 0
-            completed = self.db.scalar(select(func.count(Task.id)).where(Task.project_id == p.id, Task.status == "COMPLETED")) or 0
+            td = task_data.get(str(p.id), {"total": 0, "completed": 0})
+            task_count = td["total"]
+            completed = td["completed"]
 
             result.append(PlanVsActualProject(
                 id=p.id,
@@ -128,69 +190,122 @@ class AnalyticsService:
             overall_overrun_pct=overall_overrun,
         )
 
-    def get_employee_utilization(self, from_date: date | None = None, to_date: date | None = None) -> UtilizationResponse:
+    def get_employee_utilization(
+        self,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        current_user_id: uuid.UUID | None = None,
+    ) -> UtilizationResponse:
         if not to_date:
             to_date = date.today()
         if not from_date:
             from_date = to_date - timedelta(days=30)
 
-        employees = self.db.scalars(
-            select(Employee).where(Employee.is_active == True).order_by(Employee.first_name)
-        ).all()
+        # FIX 3: RBAC scoping
+        from app.core.rbac import DataAccessLevel
+        from app.services.dashboard.dashboard_common_service import DashboardCommonService
+
+        user_ctx = None
+        if current_user_id is not None:
+            from app.core.rbac import get_user_context
+            user_ctx = get_user_context(self.db, str(current_user_id))
+
+        scoped_employee_ids = DashboardCommonService.get_scoped_employee_ids(self.db, user_ctx) if user_ctx else None
+
+        emp_stmt = select(Employee).where(Employee.is_active == True).order_by(Employee.first_name)
+        if scoped_employee_ids is not None:
+            emp_stmt = emp_stmt.where(Employee.id.in_(scoped_employee_ids))
+
+        # For SELF level, restrict to only the current user
+        if user_ctx and user_ctx.data_access_level == DataAccessLevel.SELF and current_user_id is not None:
+            emp_stmt = select(Employee).where(
+                Employee.is_active == True, Employee.id == current_user_id
+            )
+
+        employees = self.db.scalars(emp_stmt).all()
+        employee_ids = [emp.id for emp in employees]
+
+        if not employee_ids:
+            return UtilizationResponse(
+                employees=[], period_start=from_date, period_end=to_date, total_hours_company=0.0
+            )
+
+        # FIX 5: Batch pre-fetch all per-employee metrics before the loop
+
+        # Batch 1: total hours logged per employee
+        hours_map = {str(r[0]): float(r[1] or 0) for r in self.db.execute(
+            select(TimeEntry.employee_id, func.sum(TimeEntry.hours_spent))
+            .where(
+                TimeEntry.employee_id.in_(employee_ids),
+                TimeEntry.date >= from_date,
+                TimeEntry.date <= to_date,
+                TimeEntry.status != "REJECTED",
+            )
+            .group_by(TimeEntry.employee_id)
+        ).all()}
+
+        # Batch 2: billable hours per employee
+        billable_map = {str(r[0]): float(r[1] or 0) for r in self.db.execute(
+            select(TimeEntry.employee_id, func.sum(TimeEntry.hours_spent))
+            .where(
+                TimeEntry.employee_id.in_(employee_ids),
+                TimeEntry.date >= from_date,
+                TimeEntry.date <= to_date,
+                TimeEntry.is_billable == True,
+                TimeEntry.status != "REJECTED",
+            )
+            .group_by(TimeEntry.employee_id)
+        ).all()}
+
+        # Batch 3: distinct task count per employee
+        task_count_map = {str(r[0]): int(r[1] or 0) for r in self.db.execute(
+            select(TimeEntry.employee_id, func.count(func.distinct(TimeEntry.task_id)))
+            .where(
+                TimeEntry.employee_id.in_(employee_ids),
+                TimeEntry.date >= from_date,
+                TimeEntry.date <= to_date,
+            )
+            .group_by(TimeEntry.employee_id)
+        ).all()}
+
+        # Batch 4: late days per employee
+        late_days_map = {str(r[0]): int(r[1] or 0) for r in self.db.execute(
+            select(Attendance.employee_id, func.count(Attendance.id))
+            .where(
+                Attendance.employee_id.in_(employee_ids),
+                Attendance.date >= from_date,
+                Attendance.date <= to_date,
+                Attendance.is_late == True,
+            )
+            .group_by(Attendance.employee_id)
+        ).all()}
+
+        # Batch 5: absence count per employee
+        absence_map = {str(r[0]): int(r[1] or 0) for r in self.db.execute(
+            select(Attendance.employee_id, func.count(Attendance.id))
+            .where(
+                Attendance.employee_id.in_(employee_ids),
+                Attendance.date >= from_date,
+                Attendance.date <= to_date,
+                Attendance.status == "ABSENT",
+            )
+            .group_by(Attendance.employee_id)
+        ).all()}
+
+        # FIX 11: correct std_hours formula — 8 hours per working day
+        working_days_in_period = (to_date - from_date).days + 1
+        std_hours = round(working_days_in_period * 8, 1) if working_days_in_period > 0 else 160.0
 
         result = []
         total_company_hours = 0.0
 
         for emp in employees:
-            hours_logged = self.db.scalar(
-                select(func.coalesce(func.sum(TimeEntry.hours_spent), 0)).where(
-                    TimeEntry.employee_id == emp.id,
-                    TimeEntry.date >= from_date,
-                    TimeEntry.date <= to_date,
-                    TimeEntry.status != "REJECTED",
-                )
-            ) or 0
-            hours_logged = float(hours_logged)
-
-            billable = self.db.scalar(
-                select(func.coalesce(func.sum(TimeEntry.hours_spent), 0)).where(
-                    TimeEntry.employee_id == emp.id,
-                    TimeEntry.date >= from_date,
-                    TimeEntry.date <= to_date,
-                    TimeEntry.is_billable == True,
-                    TimeEntry.status != "REJECTED",
-                )
-            ) or 0
-            billable = float(billable)
-
-            task_count = self.db.scalar(
-                select(func.count(func.distinct(TimeEntry.task_id))).where(
-                    TimeEntry.employee_id == emp.id,
-                    TimeEntry.date >= from_date,
-                    TimeEntry.date <= to_date,
-                )
-            ) or 0
-
-            late_days = self.db.scalar(
-                select(func.count(Attendance.id)).where(
-                    Attendance.employee_id == emp.id,
-                    Attendance.date >= from_date,
-                    Attendance.date <= to_date,
-                    Attendance.is_late == True,
-                )
-            ) or 0
-
-            absence_days = self.db.scalar(
-                select(func.count(Attendance.id)).where(
-                    Attendance.employee_id == emp.id,
-                    Attendance.date >= from_date,
-                    Attendance.date <= to_date,
-                    Attendance.status == "ABSENT",
-                )
-            ) or 0
-
-            working_days_in_period = (to_date - from_date).days + 1
-            std_hours = round(working_days_in_period / 30 * 160, 1) if working_days_in_period > 0 else 160
+            key = str(emp.id)
+            hours_logged = hours_map.get(key, 0.0)
+            billable = billable_map.get(key, 0.0)
+            task_count = task_count_map.get(key, 0)
+            late_days = late_days_map.get(key, 0)
+            absence_days = absence_map.get(key, 0)
 
             utilization_pct = round((hours_logged / std_hours * 100), 1) if std_hours > 0 else 0.0
             total_company_hours += hours_logged
@@ -251,9 +366,18 @@ class AnalyticsService:
 
         return DepartmentLoadResponse(departments=result)
 
-    def get_overdue_tasks(self) -> list[OverdueTask]:
+    def get_overdue_tasks(self, current_user_id: uuid.UUID | None = None) -> list[OverdueTask]:
+        # FIX 2: RBAC scoping
+        from app.core.rbac import DataAccessLevel
+        from app.services.dashboard.dashboard_common_service import DashboardCommonService
+
+        user_ctx = None
+        if current_user_id is not None:
+            from app.core.rbac import get_user_context
+            user_ctx = get_user_context(self.db, str(current_user_id))
+
         today = date.today()
-        tasks = self.db.execute(
+        stmt = (
             select(Task, Project.name.label("project_name"))
             .join(Project, Task.project_id == Project.id)
             .where(
@@ -262,20 +386,41 @@ class AnalyticsService:
                 Task.is_active == True,
             )
             .order_by(Task.planned_delivery_date)
-        ).all()
+        )
+
+        if user_ctx:
+            if user_ctx.data_access_level == DataAccessLevel.SELF:
+                # Only tasks assigned to the current user
+                stmt = stmt.join(TaskAssignment, TaskAssignment.task_id == Task.id).where(
+                    TaskAssignment.employee_id == user_ctx.employee_id
+                )
+            elif user_ctx.data_access_level == DataAccessLevel.TEAM:
+                scoped_ids = DashboardCommonService.get_scoped_employee_ids(self.db, user_ctx)
+                if scoped_ids:
+                    stmt = stmt.join(TaskAssignment, TaskAssignment.task_id == Task.id).where(
+                        TaskAssignment.employee_id.in_(scoped_ids)
+                    )
+            # MANAGED/FULL: no additional filter
+
+        tasks = self.db.execute(stmt).all()
+
+        # Batch-fetch assignee names to avoid N+1
+        task_ids = [row[0].id for row in tasks]
+        assignee_map: dict[str, str] = {}
+        if task_ids:
+            assignee_rows = self.db.execute(
+                select(TaskAssignment.task_id, Employee.first_name, Employee.last_name)
+                .join(Employee, TaskAssignment.employee_id == Employee.id)
+                .where(TaskAssignment.task_id.in_(task_ids))
+                .distinct(TaskAssignment.task_id)
+            ).all()
+            for a_row in assignee_rows:
+                assignee_map[str(a_row[0])] = f"{a_row[1]} {a_row[2] or ''}".strip()
 
         result = []
         for row in tasks:
             t = row[0]
             days_over = (today - t.planned_delivery_date).days if t.planned_delivery_date else 0
-
-            assignee = self.db.scalar(
-                select(func.concat(Employee.first_name, " ", Employee.last_name))
-                .join(TaskAssignment, TaskAssignment.employee_id == Employee.id)
-                .where(TaskAssignment.task_id == t.id)
-                .limit(1)
-            )
-
             result.append(OverdueTask(
                 id=t.id,
                 task_code=t.task_code,
@@ -288,7 +433,7 @@ class AnalyticsService:
                 estimated_hours=float(t.estimated_hours or 0),
                 actual_hours=float(t.actual_hours or 0),
                 days_overdue=days_over,
-                assignee_name=assignee,
+                assignee_name=assignee_map.get(str(t.id)),
             ))
 
         return result
@@ -323,7 +468,12 @@ class AnalyticsService:
         return ClientPerformanceResponse(clients=result)
 
     def get_scope_distribution(self) -> ScopeDistributionResponse:
-        scopes = self.db.execute(
+        from app.models.scope_of_work import ScopeOfWork
+
+        # FIX 10: Pre-fetch all scopes to avoid N+1 db.get() inside loop
+        scopes_map = {str(s.id): s for s in self.db.scalars(select(ScopeOfWork)).all()}
+
+        scope_rows = self.db.execute(
             select(
                 Task.scope_of_work_id,
                 func.coalesce(func.sum(Task.estimated_hours), 0),
@@ -336,9 +486,8 @@ class AnalyticsService:
         ).all()
 
         result = []
-        for row in scopes:
-            from app.models.scope_of_work import ScopeOfWork
-            scope = self.db.get(ScopeOfWork, row[0]) if row[0] else None
+        for row in scope_rows:
+            scope = scopes_map.get(str(row[0])) if row[0] else None
             result.append(ScopeDistribution(
                 scope_code=scope.code if scope else None,
                 scope_name=scope.name if scope else None,
@@ -537,6 +686,19 @@ class AnalyticsService:
             .order_by(Task.planned_delivery_date)
         ).all()
 
+        # FIX 7: Batch-fetch assignee names to avoid N+1
+        task_ids = [row[0].id for row in tasks]
+        assignee_map: dict[str, str] = {}
+        if task_ids:
+            assignee_rows = self.db.execute(
+                select(TaskAssignment.task_id, Employee.first_name, Employee.last_name)
+                .join(Employee, TaskAssignment.employee_id == Employee.id)
+                .where(TaskAssignment.task_id.in_(task_ids))
+                .distinct(TaskAssignment.task_id)
+            ).all()
+            for a_row in assignee_rows:
+                assignee_map[str(a_row[0])] = f"{a_row[1]} {a_row[2] or ''}".strip()
+
         result = []
         for row in tasks:
             t = row[0]
@@ -548,7 +710,7 @@ class AnalyticsService:
                 estimated_hours=float(t.estimated_hours or 0),
                 actual_hours=float(t.actual_hours or 0),
                 days_overdue=0,
-                assignee_name=None,
+                assignee_name=assignee_map.get(str(t.id)),
             ))
         return result
 

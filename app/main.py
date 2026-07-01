@@ -38,6 +38,7 @@ from app.routers.dashboard_widget import router as dashboard_widget_router
 from app.routers.task_template import router as task_template_router
 from app.routers.productivity import router as productivity_router
 from app.routers.dashboard_analytics import router as dashboard_analytics_router
+from app.routers.pending_schedule_review import router as schedule_review_router
 import app.core.redis
 from app.middleware.audit_context import set_audit_context
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -80,7 +81,14 @@ limiter = Limiter(key_func=get_remote_address)
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title=settings.PROJECT_NAME, version=settings.PROJECT_VERSION, debug=settings.DEBUG)
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version=settings.PROJECT_VERSION,
+    debug=settings.DEBUG,
+    docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
+    redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
+    openapi_url="/openapi.json" if settings.ENVIRONMENT != "production" else None,
+)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -88,14 +96,19 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Explicit origins from env (comma-separated)
 origins = [origin.strip() for origin in settings.FRONTEND_URL.split(",") if origin.strip()]
 
-# Allow all ngrok public URLs automatically (any subdomain of ngrok-free.app / ngrok.io / ngrok.dev)
-# This avoids having to update config every time ngrok generates a new URL.
+# Allow all ngrok public URLs automatically in non-production environments only.
+# This avoids having to update config every time ngrok generates a new URL during development,
+# but must not be enabled in production as it would allow any ngrok tunnel to bypass CORS.
 NGROK_ORIGIN_REGEX = r"https?://[a-zA-Z0-9\-]+\.ngrok(-free)?\.(app|io|dev)"
+
+cors_origin_regex = None
+if settings.ENVIRONMENT != "production":
+    cors_origin_regex = NGROK_ORIGIN_REGEX
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=NGROK_ORIGIN_REGEX,
+    allow_origin_regex=cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -110,7 +123,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):  # noqa
     logger.error(f"Unhandled exception on {request.method} {request.url.path}:\n{traceback.format_exc()}")
     origin = request.headers.get("origin", "")
     headers = {}
-    origin_allowed = origin in origins or bool(re.match(NGROK_ORIGIN_REGEX, origin))
+    origin_allowed = origin in origins or (cors_origin_regex is not None and bool(re.match(cors_origin_regex, origin)))
     if origin_allowed:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
@@ -159,7 +172,16 @@ async def audit_context_middleware(request: Request, call_next):
 def on_startup():
     logger.info(f"[App] Starting {settings.PROJECT_NAME} v{settings.PROJECT_VERSION} (Environment: {settings.ENVIRONMENT})")
     logger.info(f"[CORS] Explicit origins: {origins}")
-    logger.info(f"[CORS] Also allowing all ngrok origins matching: {NGROK_ORIGIN_REGEX}")
+    if cors_origin_regex:
+        logger.info(f"[CORS] Also allowing all ngrok origins matching: {cors_origin_regex}")
+
+    # Production safety assertions
+    if settings.ENVIRONMENT == "production":
+        assert not settings.DEBUG, "DEBUG must be False in production"
+        assert len(settings.SECRET_KEY) >= 64, "SECRET_KEY must be at least 64 chars in production"
+        for origin in origins:
+            if 'localhost' in origin or '127.0.0.1' in origin:
+                logger.warning(f"[Security] Production CORS allows local origin: {origin}")
 
 
     logger.info("[Database] Connecting to database...")
@@ -263,6 +285,7 @@ app.include_router(dashboard_widget_router, prefix="/api/v1")
 app.include_router(task_template_router, prefix="/api/v1")
 app.include_router(productivity_router, prefix="/api/v1")
 app.include_router(dashboard_analytics_router, prefix="/api/v1")
+app.include_router(schedule_review_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["General"])

@@ -53,7 +53,7 @@ class EmployeeBreak(Base):
     employee: Mapped["Employee"] = relationship(
         "Employee",
         foreign_keys=[employee_id],
-        backref="breaks",
+        back_populates="breaks",
     )
 
     def __repr__(self) -> str:

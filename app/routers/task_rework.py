@@ -96,7 +96,8 @@ def close_rework(
 # ── Get rework history for a task ─────────────────────────────────────────────
 
 
-@router.get("/by-task/{task_id}", response_model=APIResponse)
+@router.get("/by-task/{task_id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Tasks", "view"))])
 def get_rework_history(
     task_id: uuid.UUID,
     service: ReworkService = Depends(_get_service),

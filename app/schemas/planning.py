@@ -1,17 +1,18 @@
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EmployeeScheduleCreate(BaseModel):
     employee_id: uuid.UUID
     week_start_date: date
-    available_hours: float = 40.0
+    available_hours: float = Field(40.0, ge=0, le=168)
 
 
 class EmployeeScheduleUpdate(BaseModel):
-    available_hours: float | None = None
+    available_hours: float | None = Field(None, ge=0, le=168)
 
 
 class EmployeeScheduleResponse(BaseModel):
@@ -30,7 +31,7 @@ class EmployeeScheduleResponse(BaseModel):
 class TaskDependencyCreate(BaseModel):
     task_id: uuid.UUID
     depends_on_task_id: uuid.UUID
-    dependency_type: str = "FINISH_TO_START"
+    dependency_type: Literal["FINISH_TO_START", "START_TO_START", "FINISH_TO_FINISH", "START_TO_FINISH"] = "FINISH_TO_START"
 
 
 class TaskDependencyResponse(BaseModel):

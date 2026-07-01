@@ -80,35 +80,38 @@ class WorkSessionService:
             )
 
         # Rule 1: Check for any other RUNNING session (different task)
-        existing_active = self.db.scalar(
+        # Use with_for_update() to prevent race condition
+        running_sessions = self.db.scalars(
             select(TaskWorkSession).where(
                 TaskWorkSession.employee_id == employee_id,
                 TaskWorkSession.status == "RUNNING",
-            )
-        )
-        if existing_active:
-            # Rule 2: Auto-pause the existing running session
+            ).with_for_update()
+        ).all()
+        if running_sessions:
+            # Rule 2: Auto-pause ALL existing running sessions (defensive: normally just one)
             now = datetime.now(timezone.utc)
-            existing_active.end_time = now
-            existing_active.status = "PAUSED"
-            diff = (now - existing_active.start_time).total_seconds() / 60.0
-            existing_active.duration_minutes += int(diff)
-            existing_active.pause_reason = (
-                f"Auto-paused: new session started for task {task_id}"
-            )
+            for existing_active in running_sessions:
+                existing_active.end_time = now
+                existing_active.status = "PAUSED"
+                diff = (now - existing_active.start_time).total_seconds() / 60.0
+                existing_active.duration_minutes += int(diff)
+                existing_active.pause_reason = (
+                    f"Auto-paused: new session started for task {task_id}"
+                )
             self.db.flush()
 
-            AuditService.log(
-                self.db,
-                "task_work_session",
-                existing_active.id,
-                "AUTO_PAUSE",
-                performed_by=self.current_user_id,
-                new_value={
-                    "paused_for_task": str(task_id),
-                    "duration_minutes": existing_active.duration_minutes,
-                },
-            )
+            for existing_active in running_sessions:
+                AuditService.log(
+                    self.db,
+                    "task_work_session",
+                    existing_active.id,
+                    "AUTO_PAUSE",
+                    performed_by=self.current_user_id,
+                    new_value={
+                        "paused_for_task": str(task_id),
+                        "duration_minutes": existing_active.duration_minutes,
+                    },
+                )
 
         # Rule 6: Check attendance — must be clocked in today
         today = datetime.now(timezone.utc).date()
@@ -255,7 +258,7 @@ class WorkSessionService:
             )
 
         now = datetime.now(timezone.utc)
-        session.start_time = now
+        # DO NOT overwrite session.start_time — it must remain the original start time
         session.end_time = None
         session.status = "RUNNING"
         session.pause_reason = None
@@ -318,10 +321,13 @@ class WorkSessionService:
                 self.db.flush()
 
         # Generate a time entry from completed session
+        import logging
         try:
             self._generate_time_entry_from_session(session)
-        except Exception:
-            pass  # Non-blocking: time entry generation failure should not fail the session
+        except Exception as e:
+            logging.getLogger(__name__).error(
+                f"Failed to generate time entry for session {session.id}: {e}", exc_info=True
+            )
 
         try:
             self.db.commit()
@@ -502,6 +508,10 @@ class WorkSessionService:
             if s.status == "RUNNING":
                 running_diff = int((now - s.start_time).total_seconds() / 60.0)
                 total_session_minutes += running_diff
+            elif s.status == "PAUSED" and s.end_time:
+                # PAUSED sessions: count time up to when they were paused (end_time is set on pause)
+                paused_diff = int((s.end_time - s.start_time).total_seconds() / 60.0)
+                total_session_minutes += paused_diff
 
         # Get breaks for this employee on this date
         from app.models.employee_break import EmployeeBreak

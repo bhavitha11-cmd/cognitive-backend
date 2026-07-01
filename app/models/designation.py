@@ -41,13 +41,16 @@ class Designation(Base):
         nullable=False,
     )
 
-    department: Mapped["Department"] = relationship(
+    department: Mapped["Department | None"] = relationship(
         "Department", back_populates="designations"
+    )
+    employees: Mapped[list["Employee"]] = relationship(
+        "Employee", back_populates="designation"
     )
 
     @property
-    def department_name(self) -> str:
-        return self.department.name
+    def department_name(self) -> str | None:
+        return self.department.name if self.department else None
 
     def __repr__(self) -> str:
         return f"<Designation {self.name}>"

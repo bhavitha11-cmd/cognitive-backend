@@ -101,6 +101,7 @@ def create_task(
 @router.get(
     "/next-code/{project_id}",
     response_model=APIResponse,
+    dependencies=[Depends(require_permission("Tasks", "view"))],
 )
 def get_next_task_code(
     project_id: uuid.UUID,
@@ -158,6 +159,8 @@ def get_next_task_code(
 )
 def get_tasks_by_project(
     project_id: uuid.UUID,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, le=200),
     service: TaskService = Depends(_get_service),
     user_ctx: UserContext = Depends(require_data_access),
     db: Session = Depends(get_db),
@@ -169,11 +172,13 @@ def get_tasks_by_project(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to view tasks for this project",
         )
-    tasks = service.get_by_project(project_id)
+    all_tasks = service.get_by_project(project_id)
+    total = len(all_tasks)
+    tasks = all_tasks[skip: skip + limit]
     return APIResponse(
         success=True,
         message="Tasks retrieved successfully",
-        data={"tasks": [t.model_dump() for t in tasks], "total": len(tasks)},
+        data={"tasks": [t.model_dump() for t in tasks], "total": total, "skip": skip, "limit": limit},
     )
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
@@ -112,6 +112,16 @@ class LeaveService:
     def __init__(self, db: Session, current_user_id: UUID | None = None):
         self.db = db
         self.current_user_id = current_user_id
+
+    def _count_working_days(self, start_date: date, end_date: date, db=None) -> int:
+        """Count working days between start and end date (inclusive), excluding weekends."""
+        count = 0
+        current = start_date
+        while current <= end_date:
+            if current.weekday() < 5:  # 0=Monday, 4=Friday are weekdays
+                count += 1
+            current += timedelta(days=1)
+        return count
 
     # ── Leave Types ────────────────────────────────────────────────────────────
 
@@ -369,7 +379,7 @@ class LeaveService:
         if balance:
             balance.used = float(total_used)
             self.db.add(balance)
-            self.db.commit()
+            self.db.flush()  # Changed from db.commit() - callers own the transaction boundary
 
     # ── Leave Requests ─────────────────────────────────────────────────────────
 
@@ -444,8 +454,8 @@ class LeaveService:
         if not lt.is_active:
             raise ValueError(f"Leave type '{lt.name}' is not active")
 
-        # Calculate total days (all calendar days inclusive)
-        total_days = float((data.to_date - data.from_date).days + 1)
+        # Calculate total working days (excludes weekends)
+        total_days = float(self._count_working_days(data.from_date, data.to_date))
 
         year = data.from_date.year
 
@@ -457,6 +467,17 @@ class LeaveService:
             self.db.add(balance)
             self.db.commit()
             self.db.refresh(balance)
+
+        # Re-fetch balance with row-level lock to prevent race condition
+        balance = self.db.scalar(
+            select(LeaveBalance)
+            .where(
+                LeaveBalance.employee_id == emp_id,
+                LeaveBalance.leave_type_id == lt.id,
+                LeaveBalance.year == year,
+            )
+            .with_for_update()  # Lock the row to prevent concurrent over-allocation
+        )
 
         # Check sufficient balance
         remaining = (

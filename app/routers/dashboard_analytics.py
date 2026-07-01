@@ -9,7 +9,7 @@ import io
 import csv
 
 from app.database.session import get_db
-from app.dependencies import get_current_user, require_permission
+from app.dependencies import get_current_user, require_permission, require_any_permission
 from app.core.rbac import UserContext, require_data_access, DataAccessLevel
 from app.schemas.common import APIResponse
 from app.services.dashboard.executive_dashboard_service import ExecutiveDashboardService
@@ -231,6 +231,7 @@ def get_project_charts(
 @router.get(
     "/team-leader/summary",
     response_model=APIResponse,
+    dependencies=[Depends(require_permission("Dashboard", "view"))],
 )
 def get_team_lead_summary(
     db: Session = Depends(get_db),
@@ -253,6 +254,7 @@ def get_team_lead_summary(
 @router.get(
     "/team-leader/charts",
     response_model=APIResponse,
+    dependencies=[Depends(require_permission("Dashboard", "view"))],
 )
 def get_team_lead_charts(
     db: Session = Depends(get_db),
@@ -275,6 +277,7 @@ def get_team_lead_charts(
 @router.get(
     "/team-leader/attendance",
     response_model=APIResponse,
+    dependencies=[Depends(require_permission("Dashboard", "view"))],
 )
 def get_team_lead_attendance(
     db: Session = Depends(get_db),
@@ -294,6 +297,7 @@ def get_team_lead_attendance(
 @router.get(
     "/employee/summary",
     response_model=APIResponse,
+    dependencies=[Depends(require_permission("Dashboard", "view"))],
 )
 def get_employee_summary(
     db: Session = Depends(get_db),
@@ -316,6 +320,7 @@ def get_employee_summary(
 @router.get(
     "/employee/charts",
     response_model=APIResponse,
+    dependencies=[Depends(require_permission("Dashboard", "view"))],
 )
 def get_employee_charts(
     db: Session = Depends(get_db),
@@ -366,7 +371,7 @@ def get_performance_rankings(
 
 @router.get(
     "/performance/export",
-    dependencies=[Depends(require_permission("HR", "view"))]
+    dependencies=[Depends(require_any_permission(("HR", "export"), ("HR", "view")))]
 )
 def export_performance_rankings(
     department_id: UUID | None = Query(None),

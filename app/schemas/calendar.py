@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ── Shared Calendar Event Response (for FullCalendar frontend) ──
@@ -20,7 +20,7 @@ class CalendarEventResponse(BaseModel):
     textColor: str = "#ffffff"
     extendedProps: dict | None = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ── Company Event Schemas ──
@@ -35,29 +35,49 @@ VALID_EVENT_SUBTYPES = {
 
 class CompanyEventCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     event_subtype: str | None = None
     start_date: date
     end_date: date | None = None
     start_time: time | None = None
     end_time: time | None = None
     is_all_day: bool = True
-    color: str | None = "#8B5CF6"
-    text_color: str | None = "#ffffff"
+    color: str | None = Field("#8B5CF6", max_length=7, pattern=r"^#[0-9A-Fa-f]{6}$")
+    text_color: str | None = Field("#ffffff", max_length=7, pattern=r"^#[0-9A-Fa-f]{6}$")
+
+    @field_validator('event_subtype')
+    @classmethod
+    def validate_event_subtype(cls, v):
+        if v is not None and v not in VALID_EVENT_SUBTYPES:
+            raise ValueError(f"event_subtype must be one of {VALID_EVENT_SUBTYPES}")
+        return v
+
+    @model_validator(mode='after')
+    def validate_dates(self):
+        if self.end_date and self.start_date and self.end_date < self.start_date:
+            raise ValueError('end_date must be on or after start_date')
+        return self
 
 
 class CompanyEventUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=200)
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     event_subtype: str | None = None
     start_date: date | None = None
     end_date: date | None = None
     start_time: time | None = None
     end_time: time | None = None
     is_all_day: bool | None = None
-    color: str | None = None
-    text_color: str | None = None
+    color: str | None = Field(None, max_length=7, pattern=r"^#[0-9A-Fa-f]{6}$")
+    text_color: str | None = Field(None, max_length=7, pattern=r"^#[0-9A-Fa-f]{6}$")
     is_active: bool | None = None
+
+    @field_validator('event_subtype')
+    @classmethod
+    def validate_event_subtype(cls, v):
+        if v is not None and v not in VALID_EVENT_SUBTYPES:
+            raise ValueError(f"event_subtype must be one of {VALID_EVENT_SUBTYPES}")
+        return v
 
 
 class CompanyEventResponse(BaseModel):
@@ -78,4 +98,4 @@ class CompanyEventResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)

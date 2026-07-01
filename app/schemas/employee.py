@@ -55,17 +55,17 @@ class EmployeeCreate(BaseModel):
     alternate_phone: str | None = Field(None, max_length=20)
     gender: Gender | None = None
     date_of_birth: date | None = None
-    profile_photo_url: str | None = None
+    profile_photo_url: str | None = Field(None, max_length=500)
     department_id: uuid.UUID | None = None
     designation_id: uuid.UUID | None = None
-    role_ids: list[uuid.UUID] = []
+    role_ids: list[uuid.UUID] = Field(default=[], max_length=20)
     reporting_manager_id: uuid.UUID | None = None
     date_of_joining: date | None = None
     employment_type: EmploymentType | None = None
     account_status: str = Field(default="ACTIVE")
     emergency_contact_name: str | None = Field(None, max_length=200)
     emergency_contact_phone: str | None = Field(None, max_length=20)
-    address: str | None = None
+    address: str | None = Field(None, max_length=1000)
     is_department_head: bool = False
     team_id: uuid.UUID | None = None
     is_team_lead: bool = False
@@ -120,7 +120,7 @@ class EmployeeUpdate(BaseModel):
     alternate_phone: str | None = Field(None, max_length=20)
     gender: Gender | None = None
     date_of_birth: date | None = None
-    profile_photo_url: str | None = None
+    profile_photo_url: str | None = Field(None, max_length=500)
     department_id: uuid.UUID | None = None
     designation_id: uuid.UUID | None = None
     role_ids: list[uuid.UUID] | None = None
@@ -130,10 +130,25 @@ class EmployeeUpdate(BaseModel):
     account_status: str | None = None
     emergency_contact_name: str | None = Field(None, max_length=200)
     emergency_contact_phone: str | None = Field(None, max_length=20)
-    address: str | None = None
+    address: str | None = Field(None, max_length=1000)
     is_department_head: bool | None = None
     team_id: uuid.UUID | None = None
     is_team_lead: bool | None = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_complexity(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not any(c.isupper() for c in v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not any(c.islower() for c in v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not any(c.isdigit() for c in v):
+            raise ValueError('Password must contain at least one digit')
+        if not any(c in '!@#$%^&*()_+-=[]{}|;:,.<>?' for c in v):
+            raise ValueError('Password must contain at least one special character')
+        return v
 
     @field_validator("account_status")
     @classmethod

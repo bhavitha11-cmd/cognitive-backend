@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 from uuid import UUID
 from sqlalchemy import select, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from app.models.employee import Employee
 from app.models.task import Task
 from app.models.task_assignment import TaskAssignment
@@ -33,13 +33,20 @@ class EmployeePerformanceService:
         if not to_date:
             to_date = today
 
-        # 1. Base query for employees
-        stmt = select(Employee).where(Employee.is_active == True)
+        # 1. Base query for employees — FIX 9: eager-load department and team memberships
+        stmt = (
+            select(Employee)
+            .options(
+                joinedload(Employee.department),
+                selectinload(Employee.team_memberships).joinedload(TeamMember.team),
+            )
+            .where(Employee.is_active == True)
+        )
         if department_id:
             stmt = stmt.where(Employee.department_id == department_id)
         if team_id:
             stmt = stmt.join(TeamMember, TeamMember.employee_id == Employee.id).where(TeamMember.team_id == team_id)
-        
+
         # Scoping context: only see under people
         scoped_ids = DashboardCommonService.get_scoped_employee_ids(self.db, user_ctx) if user_ctx else None
         if scoped_ids is not None:
@@ -178,11 +185,14 @@ class EmployeePerformanceService:
             compiled = KPICalculator.compile_kpi_metrics(raw_metrics, rule)
             productivity_score = compiled.get("productivity_percentage", {}).get("percentage", 0.0)
 
-            # Efficiency Score
+            # Efficiency Score — FIX 8: cap at 999.9, floor at 0
             completed_assigned_tasks = [t for t in assigned_tasks if t.status == "COMPLETED"]
             completed_planned = sum(float(t.estimated_hours or 0.0) for t in completed_assigned_tasks)
             completed_actual = sum(float(t.actual_hours or 0.0) for t in completed_assigned_tasks)
-            efficiency_score = (completed_planned / completed_actual * 100) if completed_actual > 0.0 else 100.0
+            if completed_actual > 0.0:
+                efficiency_score = round(min((completed_planned / completed_actual) * 100, 999.9), 1)
+            else:
+                efficiency_score = 100.0  # no actual hours logged = no overrun
 
             # Timesheet compliance
             submitted_days = submitted_days_map.get(emp.id, 0)

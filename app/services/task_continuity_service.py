@@ -353,7 +353,8 @@ class TaskContinuityService:
                 raise ValueError("reassign_to_id is required for SPLIT action")
 
             # SPLIT TASK: Original estimated_hours remains unchanged
-            task.status = "PARTIALLY_COMPLETED"
+            # Mark as ON_HOLD (not PARTIALLY_COMPLETED which is non-standard/not in STATUS_TRANSITIONS)
+            task.status = "ON_HOLD"
             assignment.status = "CANCELLED"
 
             # Generate unique code for child task
@@ -457,7 +458,7 @@ class TaskContinuityService:
                 performed_by=manager_id,
                 old_value={"status": "IN_PROGRESS"},
                 new_value={
-                    "status": "PARTIALLY_COMPLETED",
+                    "status": "ON_HOLD",
                     "child_task_code": child_code,
                 },
             )

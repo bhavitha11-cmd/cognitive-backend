@@ -53,10 +53,10 @@ class TaskRisk(Base):
         ForeignKey("employees.id", ondelete="CASCADE"),
         nullable=False,
     )
-    leave_request_id: Mapped[uuid.UUID] = mapped_column(
+    leave_request_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("leave_requests.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("leave_requests.id", ondelete="SET NULL"),
+        nullable=True,
     )
     leave_start_date: Mapped[date] = mapped_column(Date, nullable=False)
     leave_end_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -105,7 +105,7 @@ class TaskPauseHistory(Base):
     paused_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    paused_by: Mapped[uuid.UUID] = mapped_column(
+    paused_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("employees.id", ondelete="SET NULL"),
         nullable=True,
@@ -143,12 +143,12 @@ class TaskTransferHistory(Base):
     )
     from_employee_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("employees.id", ondelete="CASCADE"),
+        ForeignKey("employees.id", ondelete="SET NULL"),
         nullable=True,
     )
     to_employee_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("employees.id", ondelete="CASCADE"),
+        ForeignKey("employees.id", ondelete="SET NULL"),
         nullable=True,
     )
     transfer_date: Mapped[datetime] = mapped_column(

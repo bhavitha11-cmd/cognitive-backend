@@ -7,8 +7,8 @@ class DesignationCreate(BaseModel):
     department_id: uuid.UUID
     name: str = Field(..., min_length=2, max_length=100)
     code: str = Field(..., min_length=2, max_length=20)
-    level: int = 1
-    description: str | None = None
+    level: int = Field(1, ge=1, le=100)
+    description: str | None = Field(None, max_length=2000)
     is_active: bool = True
 
 
@@ -16,8 +16,8 @@ class DesignationUpdate(BaseModel):
     department_id: uuid.UUID | None = None
     name: str | None = Field(None, min_length=2, max_length=100)
     code: str | None = Field(None, min_length=2, max_length=20)
-    level: int | None = None
-    description: str | None = None
+    level: int | None = Field(None, ge=1, le=100)
+    description: str | None = Field(None, max_length=2000)
     is_active: bool | None = None
 
 

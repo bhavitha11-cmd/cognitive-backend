@@ -29,7 +29,8 @@ def _get_service(
     return ClientService(db, current_user_id=uid)
 
 
-@router.get("", response_model=APIResponse)
+@router.get("", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Clients", "view"))])
 def list_clients(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -68,7 +69,8 @@ def create_client(client_in: ClientCreate, service=Depends(_get_service)):
     )
 
 
-@router.get("/{id}", response_model=APIResponse)
+@router.get("/{id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Clients", "view"))])
 def get_client(id: uuid.UUID, service=Depends(_get_service)):
     try:
         client = service.get_by_id(id)

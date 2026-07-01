@@ -48,7 +48,7 @@ class TaskReworkHistory(Base):
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     hours_spent: Mapped[float] = mapped_column(
-        Numeric(8, 2), default=0, nullable=False
+        Numeric(8, 2), default=0, server_default="0", nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -57,7 +57,7 @@ class TaskReworkHistory(Base):
     task: Mapped["Task"] = relationship(
         "Task",
         foreign_keys=[task_id],
-        backref="rework_history",
+        back_populates="rework_history",
     )
     opener: Mapped["Employee | None"] = relationship(
         "Employee",

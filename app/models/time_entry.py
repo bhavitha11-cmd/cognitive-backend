@@ -87,17 +87,17 @@ class TimeEntry(Base):
     employee: Mapped["Employee"] = relationship(
         "Employee",
         foreign_keys=[employee_id],
-        backref="time_entries",
+        back_populates="time_entries",
     )
     task: Mapped["Task"] = relationship(
         "Task",
         foreign_keys=[task_id],
-        backref="time_entries",
+        back_populates="task_time_entries",
     )
     project: Mapped["Project"] = relationship(
         "Project",
         foreign_keys=[project_id],
-        backref="time_entries",
+        back_populates="project_time_entries",
     )
     approver: Mapped["Employee | None"] = relationship(
         "Employee",

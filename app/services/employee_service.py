@@ -2,10 +2,10 @@ import uuid
 from datetime import date, datetime, timezone
 from uuid import UUID
 
-from passlib.context import CryptContext
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.security import get_password_hash, verify_password
 from app.models.department import Department
 from app.models.employee import Employee
 from app.models.employee_role import EmployeeRole
@@ -21,8 +21,6 @@ from app.schemas.employee import (
     EmployeeOffboardBlocker,
 )
 from app.services.audit_service import AuditService
-
-pwd_context = CryptContext(schemes=["bcrypt"])
 
 # Valid status transitions state machine
 STATUS_TRANSITIONS = {
@@ -216,7 +214,7 @@ class EmployeeService:
 
         employee_data = data.model_dump(exclude={"password", "role_ids", "is_department_head", "team_id", "is_team_lead"})
         employee_data["account_status"] = status
-        employee_data["password_hash"] = pwd_context.hash(data.password)
+        employee_data["password_hash"] = get_password_hash(data.password)
 
         if not employee_data.get("display_name"):
             employee_data["display_name"] = f"{data.first_name} {data.last_name}".strip()
@@ -314,7 +312,7 @@ class EmployeeService:
             )
 
         if "password" in update_data:
-            update_data["password_hash"] = pwd_context.hash(update_data.pop("password"))
+            update_data["password_hash"] = get_password_hash(update_data.pop("password"))
 
         if "account_status" in update_data:
             new_status = update_data["account_status"].upper()
@@ -442,11 +440,15 @@ class EmployeeService:
                         self.db.add(ta)
             self.db.commit()
 
+        # Sanitize sensitive fields before passing to the audit log
+        _sensitive = ('password_hash', 'password', 'hashed_password')
+        log_old = {k: v for k, v in old_values.items() if k not in _sensitive} if old_values else None
+        log_new = {k: v for k, v in update_data.items() if k not in _sensitive} if update_data else None
         AuditService.log(
             self.db, "employee", id, "UPDATE",
             performed_by=self.current_user_id,
-            old_value=old_values if old_values else None,
-            new_value=update_data if update_data else None,
+            old_value=log_old if log_old else None,
+            new_value=log_new if log_new else None,
         )
         return EmployeeResponse.model_validate(employee)
 
@@ -762,18 +764,29 @@ class EmployeeService:
             raise ValueError("Reporting manager must be an active employee")
 
     def _detect_circular_reporting(self, employee_id: UUID | None, new_manager_id: UUID) -> None:
-        visited = set()
-        current = new_manager_id
-        while current:
-            if employee_id and current == employee_id:
-                raise ValueError("Circular reporting hierarchy detected")
-            if current in visited:
-                raise ValueError("Circular reporting hierarchy detected")
-            visited.add(current)
-            mgr = self.repo.get_by_id(current)
-            if not mgr:
-                break
-            current = mgr.reporting_manager_id
+        """Check if setting new_manager_id as manager for employee_id would create a cycle.
+        Uses a PostgreSQL recursive CTE instead of N+1 queries for O(depth) performance."""
+        from sqlalchemy import text
+
+        if not employee_id:
+            # Creating a new employee — no cycle possible yet
+            return
+
+        # Walk UP from new_manager_id to see if we reach employee_id
+        result = self.db.execute(text("""
+            WITH RECURSIVE reporting_chain AS (
+                SELECT id, reporting_manager_id FROM employees WHERE id = :start_id
+                UNION ALL
+                SELECT e.id, e.reporting_manager_id
+                FROM employees e
+                INNER JOIN reporting_chain rc ON e.id = rc.reporting_manager_id
+                WHERE rc.reporting_manager_id IS NOT NULL
+            )
+            SELECT id FROM reporting_chain WHERE id = :check_id
+        """), {"start_id": str(new_manager_id), "check_id": str(employee_id)})
+
+        if result.fetchone() is not None:
+            raise ValueError("Circular reporting hierarchy detected")
 
     def _validate_status_transition(self, old_status: str, new_status: str) -> None:
         old = old_status.upper()
@@ -797,7 +810,7 @@ class EmployeeService:
             reason="Manager reassignment",
         )
         self.db.add(record)
-        self.db.commit()
+        self.db.flush()  # Changed from db.commit() - callers own the transaction boundary
 
     def _record_role_history(
         self, employee_id: UUID, old_role_id: UUID | None, new_role_id: UUID,
@@ -812,7 +825,7 @@ class EmployeeService:
             changed_by=changed_by,
         )
         self.db.add(record)
-        self.db.commit()
+        self.db.flush()  # Changed from db.commit() - callers own the transaction boundary
 
     def _sync_roles(self, employee: Employee, role_ids: list[str]) -> None:
         existing_roles = self.repo.get_employee_roles(employee.id)

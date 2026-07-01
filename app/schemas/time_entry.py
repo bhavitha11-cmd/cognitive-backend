@@ -12,7 +12,7 @@ VALID_STATUSES = {"DRAFT", "SUBMITTED", "APPROVED", "REJECTED"}
 
 
 class TimeEntryCreate(BaseModel):
-    employee_id: Optional[uuid.UUID] = None
+    employee_id: Optional[uuid.UUID] = Field(None, description="If provided, overridden by authenticated user ID server-side")
     task_id: uuid.UUID
     date: date_type
     hours_spent: float = Field(gt=0, le=24)

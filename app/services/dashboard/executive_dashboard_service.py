@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 from uuid import UUID
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 from sqlalchemy.orm import Session
 from app.models.project import Project
 from app.models.employee import Employee
@@ -71,7 +71,7 @@ class ExecutiveDashboardService:
             active_projects_stmt = active_projects_stmt.where(Project.id.in_(scoped_project_ids))
         active_projects = self.db.scalar(active_projects_stmt) or 0
 
-        completed_projects_stmt = select(func.count(Project.id)).where(Project.status == "Completed")
+        completed_projects_stmt = select(func.count(Project.id)).where(Project.status == "Completed", Project.is_active == True)
         if scoped_project_ids is not None:
             completed_projects_stmt = completed_projects_stmt.where(Project.id.in_(scoped_project_ids))
         completed_projects = self.db.scalar(completed_projects_stmt) or 0
@@ -133,15 +133,29 @@ class ExecutiveDashboardService:
         total_capacity = 0.0
         if active_employee_ids:
             working_days = DashboardCommonService.get_working_days_in_period(from_date, to_date, self.db)
+            latest_week_subq = (
+                select(
+                    EmployeeSchedule.employee_id,
+                    func.max(EmployeeSchedule.week_start_date).label("latest_week"),
+                )
+                .where(EmployeeSchedule.employee_id.in_(active_employee_ids))
+                .group_by(EmployeeSchedule.employee_id)
+                .subquery()
+            )
             schedules_stmt = (
                 select(EmployeeSchedule.employee_id, EmployeeSchedule.available_hours)
-                .where(EmployeeSchedule.employee_id.in_(active_employee_ids))
-                .order_by(EmployeeSchedule.week_start_date.desc())
+                .join(
+                    latest_week_subq,
+                    and_(
+                        EmployeeSchedule.employee_id == latest_week_subq.c.employee_id,
+                        EmployeeSchedule.week_start_date == latest_week_subq.c.latest_week,
+                    ),
+                )
             )
-            latest_schedules = {}
-            for emp_id, avail in self.db.execute(schedules_stmt).all():
-                if emp_id not in latest_schedules:
-                    latest_schedules[emp_id] = float(avail)
+            latest_schedules = {
+                emp_id: float(avail)
+                for emp_id, avail in self.db.execute(schedules_stmt).all()
+            }
 
             for emp in active_employees:
                 weekly_hours = latest_schedules.get(emp.id, 40.0)
@@ -255,17 +269,31 @@ class ExecutiveDashboardService:
             )
             actual_hours_map = {row[0]: float(row[1] or 0.0) for row in self.db.execute(actual_hours_stmt).all()}
 
-            # Batch Query schedules
+            # Batch Query schedules (one row per employee — the latest week)
             working_days = DashboardCommonService.get_working_days_in_period(from_date, to_date, self.db)
+            charts_latest_week_subq = (
+                select(
+                    EmployeeSchedule.employee_id,
+                    func.max(EmployeeSchedule.week_start_date).label("latest_week"),
+                )
+                .where(EmployeeSchedule.employee_id.in_(employee_ids))
+                .group_by(EmployeeSchedule.employee_id)
+                .subquery()
+            )
             schedules_stmt = (
                 select(EmployeeSchedule.employee_id, EmployeeSchedule.available_hours)
-                .where(EmployeeSchedule.employee_id.in_(employee_ids))
-                .order_by(EmployeeSchedule.week_start_date.desc())
+                .join(
+                    charts_latest_week_subq,
+                    and_(
+                        EmployeeSchedule.employee_id == charts_latest_week_subq.c.employee_id,
+                        EmployeeSchedule.week_start_date == charts_latest_week_subq.c.latest_week,
+                    ),
+                )
             )
-            latest_schedules = {}
-            for emp_id, avail in self.db.execute(schedules_stmt).all():
-                if emp_id not in latest_schedules:
-                    latest_schedules[emp_id] = float(avail)
+            latest_schedules = {
+                emp_id: float(avail)
+                for emp_id, avail in self.db.execute(schedules_stmt).all()
+            }
 
             for emp in employees:
                 logged = actual_hours_map.get(emp.id, 0.0)
@@ -361,10 +389,18 @@ class ExecutiveDashboardService:
         return self.db.scalars(stmt.order_by(Project.updated_at.desc()).limit(5)).all()
 
     def get_recent_activities(self, user_ctx = None) -> ExecutiveRecentActivities:
+        from sqlalchemy import or_, and_
         scoped_project_ids = self._get_scoped_project_ids(user_ctx)
         stmt = select(AuditLog).where(AuditLog.entity_type.in_(["project", "task"]))
         if scoped_project_ids is not None:
-            stmt = stmt.where(AuditLog.entity_id.in_(scoped_project_ids))
+            scoped_task_ids = self.db.scalars(
+                select(Task.id).where(Task.project_id.in_(scoped_project_ids))
+            ).all()
+            scope_filter = or_(
+                and_(AuditLog.entity_type == 'project', AuditLog.entity_id.in_(scoped_project_ids)),
+                and_(AuditLog.entity_type == 'task', AuditLog.entity_id.in_(scoped_task_ids)),
+            )
+            stmt = stmt.where(scope_filter)
 
         logs = self.db.scalars(stmt.order_by(AuditLog.performed_at.desc()).limit(10)).all()
 

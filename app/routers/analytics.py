@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.dependencies import get_current_user, require_permission
+from app.core.rbac import UserContext, require_data_access
 from app.schemas.common import APIResponse
 from app.services.analytics_service import AnalyticsService
 
@@ -21,8 +22,11 @@ def _get_service(db: Session = Depends(get_db)) -> AnalyticsService:
 
 
 @router.get("/dashboard", response_model=APIResponse)
-def dashboard_stats(service: AnalyticsService = Depends(_get_service)):
-    stats = service.get_dashboard_stats()
+def dashboard_stats(
+    service: AnalyticsService = Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
+):
+    stats = service.get_dashboard_stats(current_user_id=user_ctx.employee_id)
     return APIResponse(success=True, message="Dashboard stats retrieved", data=stats.model_dump())
 
 
@@ -37,8 +41,9 @@ def utilization(
     from_date: date | None = Query(default=None),
     to_date: date | None = Query(default=None),
     service: AnalyticsService = Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
 ):
-    result = service.get_employee_utilization(from_date, to_date)
+    result = service.get_employee_utilization(from_date, to_date, current_user_id=user_ctx.employee_id)
     return APIResponse(success=True, message="Utilization data retrieved", data=result.model_dump())
 
 
@@ -49,8 +54,11 @@ def department_load(service: AnalyticsService = Depends(_get_service)):
 
 
 @router.get("/overdue-tasks", response_model=APIResponse)
-def overdue_tasks(service: AnalyticsService = Depends(_get_service)):
-    result = service.get_overdue_tasks()
+def overdue_tasks(
+    service: AnalyticsService = Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
+):
+    result = service.get_overdue_tasks(current_user_id=user_ctx.employee_id)
     return APIResponse(success=True, message="Overdue tasks retrieved", data={"tasks": [t.model_dump() for t in result]})
 
 

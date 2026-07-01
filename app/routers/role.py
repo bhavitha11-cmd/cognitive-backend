@@ -21,7 +21,8 @@ def _get_service(db: Session = Depends(get_db)) -> RoleService:
     return RoleService(db)
 
 
-@router.get("", response_model=APIResponse)
+@router.get("", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Settings", "view"))])
 def get_roles(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -84,7 +85,8 @@ def delete_role(id: uuid.UUID, service: RoleService = Depends(_get_service)):
 
 # ── Permissions ───────────────────────────────────────────────────────────────
 
-@router.get("/{id}/permissions", response_model=APIResponse)
+@router.get("/{id}/permissions", response_model=APIResponse,
+            dependencies=[Depends(require_permission("Settings", "view"))])
 def get_role_permissions(id: uuid.UUID, db: Session = Depends(get_db)):
     role = db.get(Role, id)
     if not role:
@@ -109,6 +111,18 @@ def set_role_permissions(
     role = db.get(Role, id)
     if not role:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+
+    VALID_MODULES = {
+        "HR", "Projects", "Tasks", "Clients", "Timesheets", "Leave",
+        "Attendance", "Analytics", "Settings", "Calendar", "Dashboard",
+        "Holiday", "TaskTemplate", "CalendarSettings", "Productivity"
+    }
+    for perm in body.permissions:
+        if perm.module_name not in VALID_MODULES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown module: {perm.module_name}. Valid modules: {sorted(VALID_MODULES)}"
+            )
 
     # Build a lookup of existing permissions by module_name
     existing = {p.module_name: p for p in role.permissions}

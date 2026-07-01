@@ -46,5 +46,18 @@ class Settings(BaseSettings):
             )
         return v
 
+    @field_validator('ALGORITHM')
+    @classmethod
+    def validate_algorithm(cls, v: str) -> str:
+        allowed = {"HS256", "HS384", "HS512"}
+        if v not in allowed:
+            raise ValueError(f"ALGORITHM must be one of {allowed}")
+        return v
+
 
 settings = Settings()
+
+# Centralized super-admin role codes — single source of truth used across the app
+SUPER_ADMIN_CODES: frozenset[str] = frozenset({
+    "ADMIN", "CEO", "CHIEF_EXECUTIVE_OFFICER", "ADMINISTRATOR"
+})

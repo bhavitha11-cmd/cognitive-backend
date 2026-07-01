@@ -25,7 +25,8 @@ def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(g
     return TeamService(db, current_user_id=uid)
 
 
-@router.get("", response_model=APIResponse)
+@router.get("", response_model=APIResponse,
+            dependencies=[Depends(require_permission("HR", "view"))])
 def list_teams(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -56,7 +57,8 @@ def create_team(data: TeamCreate, service: TeamService = Depends(_get_service)):
     )
 
 
-@router.get("/{id}", response_model=APIResponse)
+@router.get("/{id}", response_model=APIResponse,
+            dependencies=[Depends(require_permission("HR", "view"))])
 def get_team(id: uuid.UUID, service: TeamService = Depends(_get_service)):
     team = service.get_by_id(id)
     if not team:

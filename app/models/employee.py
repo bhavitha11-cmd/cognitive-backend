@@ -97,7 +97,7 @@ class Employee(Base):
         "Department", back_populates="employees", foreign_keys=[department_id]
     )
     designation: Mapped["Designation | None"] = relationship(
-        "Designation", foreign_keys=[designation_id]
+        "Designation", foreign_keys=[designation_id], back_populates="employees"
     )
     reporting_manager: Mapped["Employee | None"] = relationship(
         "Employee",
@@ -115,6 +115,15 @@ class Employee(Base):
     )
     team_assignments: Mapped[list["TeamMember"]] = relationship(
         "TeamMember", back_populates="employee", cascade="all, delete-orphan"
+    )
+    time_entries: Mapped[list["TimeEntry"]] = relationship(
+        "TimeEntry", foreign_keys="[TimeEntry.employee_id]", back_populates="employee"
+    )
+    work_sessions: Mapped[list["TaskWorkSession"]] = relationship(
+        "TaskWorkSession", foreign_keys="[TaskWorkSession.employee_id]", back_populates="employee"
+    )
+    breaks: Mapped[list["EmployeeBreak"]] = relationship(
+        "EmployeeBreak", foreign_keys="[EmployeeBreak.employee_id]", back_populates="employee"
     )
 
     def __repr__(self) -> str:

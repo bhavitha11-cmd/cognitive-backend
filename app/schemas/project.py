@@ -13,7 +13,7 @@ class ProjectCreate(BaseModel):
     part_number: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=3, max_length=500)
     part_name: str = Field(..., min_length=1, max_length=255)
-    description: str | None = None
+    description: str | None = Field(None, max_length=5000)
     client_id: uuid.UUID
     project_manager_id: uuid.UUID | None = None
     department_id: uuid.UUID
@@ -22,12 +22,12 @@ class ProjectCreate(BaseModel):
     is_billable: bool = True
     planned_start_date: date | None = None
     planned_end_date: date | None = None
-    estimated_hours: float = 0
-    contract_hours: float | None = None
+    estimated_hours: float = Field(0, ge=0)
+    contract_hours: float | None = Field(None, ge=0)
     invoice_status: str = "PENDING"
-    tok_form: str | None = None
+    tok_form: str | None = Field(None, max_length=5000)
     feedback_status: str = "PENDING"
-    status_reason: str | None = None
+    status_reason: str | None = Field(None, max_length=5000)
 
     @field_validator("status")
     @classmethod
@@ -62,7 +62,7 @@ class ProjectUpdate(BaseModel):
     part_number: str | None = Field(None, min_length=1, max_length=50)
     name: str | None = Field(None, min_length=3, max_length=500)
     part_name: str | None = Field(None, min_length=1, max_length=255)
-    description: str | None = None
+    description: str | None = Field(None, max_length=5000)
     client_id: uuid.UUID | None = None
     project_manager_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
@@ -72,11 +72,11 @@ class ProjectUpdate(BaseModel):
     is_billable: bool | None = None
     planned_start_date: date | None = None
     planned_end_date: date | None = None
-    contract_hours: float | None = None
+    contract_hours: float | None = Field(None, ge=0)
     invoice_status: str | None = None
-    tok_form: str | None = None
+    tok_form: str | None = Field(None, max_length=5000)
     feedback_status: str | None = None
-    status_reason: str | None = None
+    status_reason: str | None = Field(None, max_length=5000)
     is_active: bool | None = None
 
     @field_validator("priority")

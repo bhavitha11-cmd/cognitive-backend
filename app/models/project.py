@@ -74,15 +74,15 @@ class Project(Base):
 
     # Hours / billing
     estimated_hours: Mapped[float] = mapped_column(
-        Numeric(10, 2), nullable=False, default=0
+        Numeric(10, 2), nullable=False, default=0, server_default="0"
     )
     # Auto-computed from tasks — do NOT set manually
     actual_hours: Mapped[float] = mapped_column(
-        Numeric(10, 2), nullable=False, default=0
+        Numeric(10, 2), nullable=False, default=0, server_default="0"
     )
     # Hour-weighted progress 0.00–100.00 — auto-computed from tasks
     progress: Mapped[float] = mapped_column(
-        Numeric(5, 2), nullable=False, default=0
+        Numeric(5, 2), nullable=False, default=0, server_default="0"
     )
     contract_hours: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
 
@@ -127,6 +127,12 @@ class Project(Base):
     )
     members: Mapped[list["ProjectMember"]] = relationship(
         "ProjectMember", back_populates="project", lazy="select"
+    )
+    project_time_entries: Mapped[list["TimeEntry"]] = relationship(
+        "TimeEntry", foreign_keys="[TimeEntry.project_id]", back_populates="project"
+    )
+    project_work_sessions: Mapped[list["TaskWorkSession"]] = relationship(
+        "TaskWorkSession", foreign_keys="[TaskWorkSession.project_id]", back_populates="project"
     )
 
     def __repr__(self) -> str:

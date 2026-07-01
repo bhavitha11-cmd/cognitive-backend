@@ -6,14 +6,14 @@ from pydantic import BaseModel, Field, ConfigDict
 class TeamCreate(BaseModel):
     team_name: str = Field(..., min_length=1, max_length=200)
     team_code: str = Field(..., min_length=1, max_length=50)
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     department_id: uuid.UUID | None = None
 
 
 class TeamUpdate(BaseModel):
     team_name: str | None = Field(None, min_length=1, max_length=200)
     team_code: str | None = Field(None, min_length=1, max_length=50)
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     department_id: uuid.UUID | None = None
     is_active: bool | None = None
 

@@ -1,6 +1,8 @@
-from fastapi import APIRouter, Depends, Query
+import uuid as uuid_module
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.database.session import get_db
 from app.models.audit_log import AuditLog
@@ -28,11 +30,18 @@ def list_audit_logs(
     if entity_type:
         filters.append(AuditLog.entity_type == entity_type)
     if entity_id:
-        filters.append(AuditLog.entity_id == entity_id)
+        try:
+            entity_uuid = uuid_module.UUID(entity_id)
+            filters.append(AuditLog.entity_id == entity_uuid)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="entity_id must be a valid UUID",
+            )
     if action:
         filters.append(AuditLog.action == action)
 
-    base_query = select(AuditLog)
+    base_query = select(AuditLog).options(joinedload(AuditLog.performer))
     if filters:
         base_query = base_query.where(*filters)
 

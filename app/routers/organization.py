@@ -7,7 +7,7 @@ from app.schemas.common import APIResponse
 from app.services.employee_service import EmployeeService
 from sqlalchemy import select
 
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_permission
 
 router = APIRouter(
     prefix="/organization",
@@ -16,7 +16,8 @@ router = APIRouter(
 )
 
 
-@router.get("/tree", response_model=APIResponse)
+@router.get("/tree", response_model=APIResponse,
+            dependencies=[Depends(require_permission("HR", "view"))])
 def get_employee_org_tree(db: Session = Depends(get_db)):
     service = EmployeeService(db)
     tree = service.get_organization_tree()
@@ -27,7 +28,8 @@ def get_employee_org_tree(db: Session = Depends(get_db)):
     )
 
 
-@router.get("/tree/role", response_model=APIResponse)
+@router.get("/tree/role", response_model=APIResponse,
+            dependencies=[Depends(require_permission("HR", "view"))])
 def get_role_hierarchy_tree(db: Session = Depends(get_db)):
     roles = db.scalars(
         select(Role).where(Role.is_active == True).order_by(Role.hierarchy_level)
