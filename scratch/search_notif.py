@@ -1,6 +1,7 @@
+from pathlib import Path
 import os
 
-backend_path = r"c:\Users\LLChowdary\OneDrive - Cognitive Engineering Technologies Pvt Ltd\Desktop\COGNITIVE\cognitive-backend\app"
+backend_path = Path(__file__).resolve().parent.parent / "app"
 search_term = "notification"
 
 matches = []

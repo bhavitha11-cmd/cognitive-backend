@@ -17,3 +17,6 @@ __pycache__/
 
 # Alembic migrations cache
 migrations/versions/*.pyc
+
+# Application logs
+logs/

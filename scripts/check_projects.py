@@ -1,7 +1,8 @@
+from pathlib import Path
 import sys
 from sqlalchemy import create_engine, text
 
-sys.path.append(r"c:\Users\91891\OneDrive\Desktop\cognitive\cognitive-backend")
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 db_url = "postgresql://postgres:Cognitive%402026@localhost:5432/cognitive_erp"
 engine = create_engine(db_url)

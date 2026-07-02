@@ -1,6 +1,7 @@
+from pathlib import Path
 import os
 
-models_path = r"c:\Users\LLChowdary\OneDrive - Cognitive Engineering Technologies Pvt Ltd\Desktop\COGNITIVE\cognitive-backend\app\models"
+models_path = Path(__file__).resolve().parent.parent / "app" / "models"
 files = os.listdir(models_path)
 print("Available model files:")
 print(files)

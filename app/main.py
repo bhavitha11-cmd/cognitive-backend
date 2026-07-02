@@ -3,6 +3,7 @@ import re
 import sys
 import time
 import traceback
+from pathlib import Path
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -68,7 +69,13 @@ formatter = logging.Formatter(
 console_handler.setFormatter(formatter)
 root_logger.addHandler(console_handler)
 
-file_handler = logging.FileHandler(r"c:\Users\91891\OneDrive\Desktop\cognitive\uvicorn_live.log", encoding="utf-8")
+# Setup logging directory and file path
+BASE_DIR = Path(__file__).resolve().parent.parent
+LOGS_DIR = BASE_DIR / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE_PATH = LOGS_DIR / "uvicorn_live.log"
+
+file_handler = logging.FileHandler(LOG_FILE_PATH, encoding="utf-8")
 file_handler.setLevel(LOG_LEVEL)
 file_handler.setFormatter(formatter)
 root_logger.addHandler(file_handler)
@@ -190,7 +197,7 @@ def on_startup():
         "%(asctime)s  %(levelname)-8s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    file_handler = logging.FileHandler(r"c:\Users\91891\OneDrive\Desktop\cognitive\uvicorn_live.log", encoding="utf-8")
+    file_handler = logging.FileHandler(LOG_FILE_PATH, encoding="utf-8")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
@@ -233,6 +240,7 @@ def on_startup():
     from alembic.config import Config
     from alembic import command
     alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("disable_file_config", "true")
     command.upgrade(alembic_cfg, "head")
     logger.info("[Database] Migrations complete.")
 
