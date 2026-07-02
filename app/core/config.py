@@ -1,6 +1,12 @@
+import logging
 import os
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+# Old hardcoded default that must no longer be used as an implicit fallback.
+_OLD_DEFAULT_ADMIN_PASSWORD = "AdminPassword123!"
 
 
 class Settings(BaseSettings):
@@ -25,7 +31,13 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # Admin seed credentials
-    DEFAULT_ADMIN_PASSWORD: str = "AdminPassword123!"
+    # H10: No hardcoded default. Must be provided via env; if missing, startup
+    # seeding raises a clear error. If someone still sets it to the old leaked
+    # default we log a loud warning below.
+    DEFAULT_ADMIN_PASSWORD: str = ""
+
+    # Organization timezone (IANA name, e.g. "Asia/Kolkata")
+    ORG_TIMEZONE: str = "Asia/Kolkata"
 
     # Frontend Settings
     FRONTEND_URL: str = "http://localhost:5173"
@@ -52,6 +64,17 @@ class Settings(BaseSettings):
         allowed = {"HS256", "HS384", "HS512"}
         if v not in allowed:
             raise ValueError(f"ALGORITHM must be one of {allowed}")
+        return v
+
+    @field_validator("DEFAULT_ADMIN_PASSWORD")
+    @classmethod
+    def validate_admin_password(cls, v: str) -> str:
+        # H10: warn loudly if the old leaked default is still in use.
+        if v and v == _OLD_DEFAULT_ADMIN_PASSWORD:
+            logger.warning(
+                "[Security] DEFAULT_ADMIN_PASSWORD is set to the old hardcoded "
+                "default value. Change it immediately in your .env."
+            )
         return v
 
 

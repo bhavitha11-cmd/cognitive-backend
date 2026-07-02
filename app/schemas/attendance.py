@@ -107,3 +107,32 @@ class AttendanceResponse(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ── Missed clock-out request schemas ─────────────────────────────────────────
+
+class MissedClockoutRequestCreate(BaseModel):
+    attendance_date: date_type
+    requested_clock_out: datetime
+    reason: str = Field(..., min_length=5, max_length=500)
+
+
+class MissedClockoutRequestReview(BaseModel):
+    review_notes: Optional[str] = Field(None, max_length=500)
+
+
+class MissedClockoutRequestResponse(BaseModel):
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: Optional[str] = None
+    employee_code: Optional[str] = None
+    attendance_date: date_type
+    requested_clock_out: datetime
+    reason: str
+    status: str
+    reviewed_by: Optional[uuid.UUID] = None
+    reviewed_at: Optional[datetime] = None
+    review_notes: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

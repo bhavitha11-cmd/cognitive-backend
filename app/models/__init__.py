@@ -35,6 +35,10 @@ from app.models.idle_reason_master import IdleReasonMaster
 from app.models.idle_classification import IdleClassification
 
 from app.models.pending_schedule_review import PendingScheduleReview
+from app.models.missed_clockout_request import MissedClockoutRequest
+from app.models.employee_offboarding_event import EmployeeOffboardingEvent
+from app.models.project_manager_history import ProjectManagerHistory
+from app.models.department_head_history import DepartmentHeadHistory
 from app.models.task_continuity import (
     TaskRisk,
     TaskPauseHistory,
@@ -77,6 +81,10 @@ __all__ = [
     "IdleReasonMaster",
     "IdleClassification",
     "PendingScheduleReview",
+    "MissedClockoutRequest",
+    "EmployeeOffboardingEvent",
+    "ProjectManagerHistory",
+    "DepartmentHeadHistory",
     "TaskRisk",
     "TaskPauseHistory",
     "TaskTransferHistory",

@@ -5,8 +5,10 @@ from datetime import date, datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.org_time import business_date
 from app.models.attendance import Attendance
 from app.models.employee import Employee
 from app.models.employee_break import EmployeeBreak
@@ -33,8 +35,8 @@ class BreakService:
         if not employee:
             raise ValueError("Employee not found")
 
-        # Check employee is clocked in
-        today = datetime.now(timezone.utc).date()
+        # Check employee is clocked in (IST business day)
+        today = business_date()
         attendance = self.db.scalar(
             select(Attendance).where(
                 Attendance.employee_id == employee_id,
@@ -48,11 +50,10 @@ class BreakService:
                 "You must be clocked in before taking a break"
             )
 
-        # Check no active break already (with row lock to prevent race condition)
+        # Check no active break already (any date, with row lock to prevent race)
         active_break = self.db.scalar(
             select(EmployeeBreak).where(
                 EmployeeBreak.employee_id == employee_id,
-                EmployeeBreak.date == today,
                 EmployeeBreak.break_end.is_(None),
             )
             .with_for_update()  # Lock the row to prevent concurrent duplicate breaks
@@ -96,7 +97,14 @@ class BreakService:
         self.db.add(break_record)
 
         try:
-            self.db.commit()
+            # A partial unique index (WHERE break_end IS NULL) guards against
+            # concurrent duplicate open breaks; surface it as a clean 4xx error.
+            try:
+                self.db.flush()
+            except IntegrityError:
+                self.db.rollback()
+                raise ValueError("You already have an active break")
+
             AuditService.log(
                 self.db,
                 "employee_break",
@@ -108,6 +116,9 @@ class BreakService:
                     "break_start": now.isoformat(),
                 },
             )
+            self.db.commit()
+        except ValueError:
+            raise
         except Exception:
             self.db.rollback()
             raise
@@ -122,21 +133,25 @@ class BreakService:
             raise ValueError("Current user is not set")
 
         employee_id = self.current_user_id
-        today = datetime.now(timezone.utc).date()
 
+        # Close the most recent open break regardless of date so a stale
+        # prior-day open break can still be ended.
         active_break = self.db.scalar(
             select(EmployeeBreak).where(
                 EmployeeBreak.employee_id == employee_id,
-                EmployeeBreak.date == today,
                 EmployeeBreak.break_end.is_(None),
             )
+            .order_by(EmployeeBreak.break_start.desc())
         )
         if not active_break:
             raise ValueError("No active break found")
 
         # End the break
         now = datetime.now(timezone.utc)
-        diff = int((now - active_break.break_start).total_seconds() / 60.0)
+        start = active_break.break_start
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        diff = max(0, int((now - start).total_seconds() / 60.0))
         active_break.break_end = now
         active_break.duration_minutes = diff
         if remarks:
@@ -168,7 +183,7 @@ class BreakService:
             )
 
         try:
-            self.db.commit()
+            self.db.flush()
             AuditService.log(
                 self.db,
                 "employee_break",
@@ -180,6 +195,7 @@ class BreakService:
                     "break_end": now.isoformat(),
                 },
             )
+            self.db.commit()
         except Exception:
             self.db.rollback()
             raise
@@ -192,13 +208,12 @@ class BreakService:
         if not self.current_user_id:
             raise ValueError("Current user is not set")
 
-        today = datetime.now(timezone.utc).date()
         active_break = self.db.scalar(
             select(EmployeeBreak).where(
                 EmployeeBreak.employee_id == self.current_user_id,
-                EmployeeBreak.date == today,
                 EmployeeBreak.break_end.is_(None),
             )
+            .order_by(EmployeeBreak.break_start.desc())
         )
         if not active_break:
             return None

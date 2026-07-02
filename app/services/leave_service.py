@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
@@ -114,14 +114,14 @@ class LeaveService:
         self.current_user_id = current_user_id
 
     def _count_working_days(self, start_date: date, end_date: date, db=None) -> int:
-        """Count working days between start and end date (inclusive), excluding weekends."""
-        count = 0
-        current = start_date
-        while current <= end_date:
-            if current.weekday() < 5:  # 0=Monday, 4=Friday are weekdays
-                count += 1
-            current += timedelta(days=1)
-        return count
+        """Count working days between start and end date (inclusive).
+
+        Delegates to the shared WorkingDayEngine so that holidays and the org
+        work_days configuration are respected (not just Sat/Sun).
+        """
+        from app.services.working_day_engine import WorkingDayEngine
+
+        return WorkingDayEngine.count_working_days(start_date, end_date, db or self.db)
 
     # ── Leave Types ────────────────────────────────────────────────────────────
 
@@ -159,8 +159,7 @@ class LeaveService:
         )
         try:
             self.db.add(lt)
-            self.db.commit()
-            self.db.refresh(lt)
+            self.db.flush()  # assign lt.id before audit, still inside the txn
             AuditService.log(
                 self.db,
                 "leave_type",
@@ -169,6 +168,8 @@ class LeaveService:
                 performed_by=self.current_user_id,
                 new_value={"code": lt.code, "name": lt.name},
             )
+            self.db.commit()
+            self.db.refresh(lt)
             return _build_leave_type_response(lt)
         except Exception:
             self.db.rollback()
@@ -197,8 +198,6 @@ class LeaveService:
         try:
             for key, value in update_data.items():
                 setattr(lt, key, value)
-            self.db.commit()
-            self.db.refresh(lt)
             AuditService.log(
                 self.db,
                 "leave_type",
@@ -208,6 +207,8 @@ class LeaveService:
                 old_value=old_values,
                 new_value=update_data,
             )
+            self.db.commit()
+            self.db.refresh(lt)
             return _build_leave_type_response(lt)
         except Exception:
             self.db.rollback()
@@ -307,6 +308,17 @@ class LeaveService:
 
                 self.db.add(balance)
 
+            self.db.flush()
+
+            AuditService.log(
+                self.db,
+                "leave_balance",
+                employee_id,
+                "INITIALIZE",
+                performed_by=self.current_user_id,
+                new_value={"employee_id": str(employee_id), "year": year},
+            )
+
             self.db.commit()
 
             # Refresh and build responses
@@ -321,15 +333,6 @@ class LeaveService:
                 if balance:
                     self.db.refresh(balance)
                     results.append(_build_balance_response(balance))
-
-            AuditService.log(
-                self.db,
-                "leave_balance",
-                employee_id,
-                "INITIALIZE",
-                performed_by=self.current_user_id,
-                new_value={"employee_id": str(employee_id), "year": year},
-            )
         except Exception:
             self.db.rollback()
             raise
@@ -517,8 +520,7 @@ class LeaveService:
         )
         try:
             self.db.add(req)
-            self.db.commit()
-            self.db.refresh(req)
+            self.db.flush()  # assign req.id before audit, still inside the txn
             AuditService.log(
                 self.db,
                 "leave_request",
@@ -533,6 +535,8 @@ class LeaveService:
                     "total_days": total_days,
                 },
             )
+            self.db.commit()
+            self.db.refresh(req)
             return _build_request_response(req)
         except Exception:
             self.db.rollback()
@@ -555,8 +559,6 @@ class LeaveService:
         try:
             for key, value in update_data.items():
                 setattr(req, key, value)
-            self.db.commit()
-            self.db.refresh(req)
             AuditService.log(
                 self.db,
                 "leave_request",
@@ -565,6 +567,8 @@ class LeaveService:
                 performed_by=self.current_user_id,
                 new_value=update_data,
             )
+            self.db.commit()
+            self.db.refresh(req)
             return _build_request_response(req)
         except Exception:
             self.db.rollback()
@@ -585,8 +589,6 @@ class LeaveService:
 
         try:
             req.status = "CANCELLED"
-            self.db.commit()
-            self.db.refresh(req)
             AuditService.log(
                 self.db,
                 "leave_request",
@@ -596,6 +598,8 @@ class LeaveService:
                 old_value={"status": "PENDING"},
                 new_value={"status": "CANCELLED"},
             )
+            self.db.commit()
+            self.db.refresh(req)
             return _build_request_response(req)
         except Exception:
             self.db.rollback()
@@ -613,6 +617,10 @@ class LeaveService:
                 f"Only PENDING requests can be approved or rejected. Current status: {req.status}"
             )
 
+        # H9: an approver cannot approve/reject their own leave request.
+        if req.employee_id == self.current_user_id:
+            raise ValueError("You cannot approve your own leave request")
+
         action = data.action.upper()
         if action not in ("APPROVED", "REJECTED"):
             raise ValueError("action must be 'APPROVED' or 'REJECTED'")
@@ -621,6 +629,44 @@ class LeaveService:
             raise ValueError("rejection_reason is required when rejecting a leave request")
 
         try:
+            year = req.from_date.year
+
+            # H4: re-validate remaining balance at approval time to prevent
+            # over-allocation. Multiple PENDING requests can each pass the
+            # apply-time (APPROVED-only) check, so we must re-check here with a
+            # row-level lock before flipping this request to APPROVED.
+            if action == "APPROVED":
+                balance = self.db.scalar(
+                    select(LeaveBalance)
+                    .where(
+                        LeaveBalance.employee_id == req.employee_id,
+                        LeaveBalance.leave_type_id == req.leave_type_id,
+                        LeaveBalance.year == year,
+                    )
+                    .with_for_update()  # lock to prevent concurrent over-allocation
+                )
+                if balance:
+                    entitlement = (
+                        float(balance.total_allowed) + float(balance.carried_forward)
+                    )
+                    # Already-approved usage excluding this (still-PENDING) request.
+                    used_other = self.db.scalar(
+                        select(func.coalesce(func.sum(LeaveRequest.total_days), 0)).where(
+                            LeaveRequest.employee_id == req.employee_id,
+                            LeaveRequest.leave_type_id == req.leave_type_id,
+                            LeaveRequest.status == "APPROVED",
+                            func.extract("year", LeaveRequest.from_date) == year,
+                        )
+                    ) or 0.0
+                    projected_used = float(used_other) + float(req.total_days)
+                    if projected_used > entitlement:
+                        remaining = entitlement - float(used_other)
+                        raise ValueError(
+                            f"Insufficient leave balance to approve. Requested "
+                            f"{float(req.total_days)} day(s), but only {remaining:.2f} "
+                            f"day(s) remaining."
+                        )
+
             req.status = action
             req.approved_by = self.current_user_id
             req.approved_at = datetime.now(timezone.utc)
@@ -630,14 +676,12 @@ class LeaveService:
             if data.hr_notes is not None:
                 req.hr_notes = data.hr_notes
 
-            self.db.commit()
-            self.db.refresh(req)
-
             if action == "APPROVED":
-                year = req.from_date.year
+                # Recompute used balance (flush-only) — now inside the txn,
+                # before the single commit, so approval decrements the balance.
                 self._recompute_used(req.employee_id, req.leave_type_id, year)
-                
-                # Trigger Task Continuity Engine
+
+                # Trigger Task Continuity Engine (before commit).
                 from app.services.task_continuity_service import TaskContinuityService
                 continuity_svc = TaskContinuityService(self.db, self.current_user_id)
                 continuity_svc.detect_and_create_task_risks(req.employee_id, req)
@@ -651,6 +695,9 @@ class LeaveService:
                 old_value={"status": "PENDING"},
                 new_value={"status": action},
             )
+
+            self.db.commit()
+            self.db.refresh(req)
             return _build_request_response(req)
         except Exception:
             self.db.rollback()

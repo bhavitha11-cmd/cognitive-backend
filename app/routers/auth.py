@@ -33,6 +33,15 @@ router = APIRouter(
     tags=["Authentication"],
 )
 
+# A bcrypt hash of a random string, computed once at import time, used ONLY to
+# burn a constant amount of CPU when the username does not exist. This keeps the
+# login response time for a missing user comparable to that of a real user with
+# a wrong password, closing the user-enumeration timing side channel. Generated
+# via get_password_hash so it always matches the installed bcrypt backend.
+import secrets as _secrets
+
+_DUMMY_PASSWORD_HASH = get_password_hash(_secrets.token_urlsafe(32))
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -83,6 +92,10 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     employee = db.scalars(query).unique().first()
 
     if not employee:
+        # Run a dummy bcrypt verify so the missing-user branch takes roughly the
+        # same time as a real user with a wrong password (prevents username
+        # enumeration via response-time differences). Result is ignored.
+        verify_password(login_data.password, _DUMMY_PASSWORD_HASH)
         raise credentials_exception
 
     # Check if account is locked
@@ -282,11 +295,22 @@ def change_password(
 
     employee.password_hash = get_password_hash(body.new_password)
     db.add(employee)
-    db.commit()
+
+    # TODO(security): invalidate all existing sessions/tokens on password change.
+    # There is currently NO token-version / password_changed_at mechanism on the
+    # Employee model (verified: no such column exists) and JWTs are not tracked
+    # per-user, so access/refresh tokens issued before the change remain valid
+    # until they expire. Implementing this requires a schema/model change
+    # (e.g. an Employee.token_version column bumped here and checked in
+    # get_current_user, or a password_changed_at timestamp compared against the
+    # token `iat`), which is out of scope for this change. Until then, changing
+    # the password does NOT log out other active sessions.
 
     from app.services.audit_service import AuditService
     AuditService.log(db, "employee", employee.id, "CHANGE_PASSWORD",
                      performed_by=employee.id)
+
+    db.commit()
 
     return APIResponse(success=True, message="Password changed successfully")
 

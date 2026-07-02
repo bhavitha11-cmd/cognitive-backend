@@ -48,6 +48,21 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Security M1: offboarded/deactivated users must lose access immediately.
+    # Resolve the employee and reject inactive accounts with 401.
+    from app.models.employee import Employee
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise credentials_exception
+    employee = db.scalar(select(Employee).where(Employee.id == user_uuid))
+    if employee is None or not employee.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is inactive or no longer exists",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user_id
 
 

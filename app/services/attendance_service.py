@@ -5,16 +5,20 @@ from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 
 from sqlalchemy import select, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
+from app.core.org_time import org_now, to_org, business_date
 from app.models.attendance import Attendance
 from app.models.attendance_rule import AttendanceRule
 from app.models.employee import Employee
+from app.models.missed_clockout_request import MissedClockoutRequest
 from app.schemas.attendance import (
     AttendanceMarkRequest,
     AttendanceResponse,
     AttendanceRuleResponse,
     AttendanceRuleUpdate,
+    MissedClockoutRequestCreate,
+    MissedClockoutRequestResponse,
 )
 from app.services.audit_service import AuditService
 
@@ -35,17 +39,23 @@ def _compute_late(
     office_start_time: str,
     late_mark_after_minutes: int,
 ) -> tuple[bool, int]:
-    """Return (is_late, late_by_minutes) relative to grace-period cutoff."""
+    """Return (is_late, late_by_minutes) relative to grace-period cutoff.
+
+    The office_start cutoff is built in the ORG timezone (Asia/Kolkata): the
+    clock_in is converted to org-local time and the cutoff is derived from
+    office_start_time on that org-local date.  This avoids systematically-wrong
+    late marks caused by comparing an IST office start against a UTC clock_in.
+    """
     start_h, start_m = _parse_hhmm(office_start_time)
-    # Build the grace-period cutoff in the same timezone as clock_in
-    tz = clock_in.tzinfo or timezone.utc
-    ref_date = clock_in.date()
-    cutoff = datetime(
-        ref_date.year, ref_date.month, ref_date.day,
-        start_h, start_m, 0, tzinfo=tz
+    # Convert clock_in into the org timezone and build the cutoff there.
+    if clock_in.tzinfo is None:
+        clock_in = clock_in.replace(tzinfo=timezone.utc)
+    org_ci = to_org(clock_in)
+    cutoff = org_ci.replace(
+        hour=start_h, minute=start_m, second=0, microsecond=0
     ) + timedelta(minutes=late_mark_after_minutes)
-    if clock_in > cutoff:
-        diff_minutes = int((clock_in - cutoff).total_seconds() // 60)
+    if org_ci > cutoff:
+        diff_minutes = int((org_ci - cutoff).total_seconds() // 60)
         return True, diff_minutes
     return False, 0
 
@@ -176,6 +186,23 @@ class AttendanceService:
             record.total_hours = 0.0
             record.overtime_hours = 0.0
 
+    # Statuses set by an admin that must never be overridden by hours-based logic.
+    _PROTECTED_STATUSES = {"ON_LEAVE", "HOLIDAY", "WFH"}
+
+    def _apply_half_day_status(self, record: Attendance, rule: AttendanceRule) -> None:
+        """After a clock_out exists, downgrade to HALF_DAY when total hours fall
+        below the rule's half-day threshold, else mark PRESENT.  Never overrides
+        an admin-set ON_LEAVE / HOLIDAY / WFH status."""
+        if record.clock_out is None:
+            return
+        if record.status in self._PROTECTED_STATUSES:
+            return
+        total = float(record.total_hours or 0)
+        if total < float(rule.half_day_hours):
+            record.status = "HALF_DAY"
+        else:
+            record.status = "PRESENT"
+
     def _apply_late(self, record: Attendance, rule: AttendanceRule) -> None:
         """Recompute is_late / late_by_minutes from clock_in."""
         if record.clock_in:
@@ -212,6 +239,21 @@ class AttendanceService:
                 "notes": record.notes,
             }
 
+        # Validate clock_out is strictly after clock_in.  Determine the
+        # effective clock_in/clock_out that will be stored, then reject an
+        # invalid ordering rather than silently clamping hours to zero.
+        effective_ci = data.clock_in if data.clock_in is not None else record.clock_in
+        effective_co = data.clock_out if data.clock_out is not None else record.clock_out
+        if effective_co is not None and effective_ci is not None:
+            ci_cmp = effective_ci
+            co_cmp = effective_co
+            if ci_cmp.tzinfo is None:
+                ci_cmp = ci_cmp.replace(tzinfo=timezone.utc)
+            if co_cmp.tzinfo is None:
+                co_cmp = co_cmp.replace(tzinfo=timezone.utc)
+            if co_cmp <= ci_cmp:
+                raise ValueError("clock_out must be after clock_in")
+
         record.status = data.status
         if data.clock_in is not None:
             record.clock_in = data.clock_in
@@ -226,8 +268,6 @@ class AttendanceService:
 
         try:
             self.db.flush()
-            self.db.commit()
-            self.db.refresh(record)
             # Eagerly load employee for response enrichment
             self.db.refresh(record, attribute_names=["employee"])
             AuditService.log(
@@ -245,6 +285,9 @@ class AttendanceService:
                     "clock_out": record.clock_out.isoformat() if record.clock_out else None,
                 },
             )
+            self.db.commit()
+            self.db.refresh(record)
+            self.db.refresh(record, attribute_names=["employee"])
         except Exception:
             self.db.rollback()
             raise
@@ -256,10 +299,15 @@ class AttendanceService:
         employee_id: uuid.UUID,
         from_date: date | None = None,
         to_date: date | None = None,
+        skip: int = 0,
+        limit: int = 200,
     ) -> list[AttendanceResponse]:
         self._get_employee_or_raise(employee_id)
+        skip = max(0, skip)
+        limit = max(1, min(limit, 200))
         stmt = (
             select(Attendance)
+            .options(selectinload(Attendance.employee))
             .where(Attendance.employee_id == employee_id)
             .order_by(Attendance.date.desc())
         )
@@ -267,28 +315,30 @@ class AttendanceService:
             stmt = stmt.where(Attendance.date >= from_date)
         if to_date:
             stmt = stmt.where(Attendance.date <= to_date)
+        stmt = stmt.offset(skip).limit(limit)
         records = self.db.scalars(stmt).all()
-        # Load employees for each record
-        for r in records:
-            self.db.refresh(r, attribute_names=["employee"])
         return [_build_response(r) for r in records]
 
     def get_by_date(
         self,
         record_date: date,
         department_id: uuid.UUID | None = None,
+        skip: int = 0,
+        limit: int = 200,
     ) -> list[AttendanceResponse]:
+        skip = max(0, skip)
+        limit = max(1, min(limit, 200))
         stmt = (
             select(Attendance)
             .join(Attendance.employee)
+            .options(selectinload(Attendance.employee))
             .where(Attendance.date == record_date)
             .order_by(Employee.last_name, Employee.first_name)
         )
         if department_id:
             stmt = stmt.where(Employee.department_id == department_id)
+        stmt = stmt.offset(skip).limit(limit)
         records = self.db.scalars(stmt).all()
-        for r in records:
-            self.db.refresh(r, attribute_names=["employee"])
         return [_build_response(r) for r in records]
 
     def get_summary(
@@ -339,6 +389,92 @@ class AttendanceService:
 
     # ── Self-service clock-in / clock-out ─────────────────────────────────────
 
+    def auto_close_missed_clockouts(
+        self,
+        max_hours: float = 10.0,
+        target_date: date | None = None,
+    ) -> list[AttendanceResponse]:
+        """
+        Find all attendance records with a clock_in but no clock_out where
+        clock_in + max_hours has already passed, and auto-close them.
+
+        - target_date: restrict to a specific date; omit to process all open records
+          through today.
+        - max_hours: how many hours after clock_in to set as the auto clock-out time
+          (default 10 h).
+
+        Returns the list of records that were closed.
+        """
+        now = _now_utc()
+        rule_obj = self.db.scalars(select(AttendanceRule)).first()
+        if not rule_obj:
+            rule_obj = AttendanceRule()
+            self.db.add(rule_obj)
+            self.db.flush()
+
+        stmt = select(Attendance).where(
+            Attendance.clock_in.isnot(None),
+            Attendance.clock_out.is_(None),
+        )
+        if target_date:
+            stmt = stmt.where(Attendance.date == target_date)
+        else:
+            stmt = stmt.where(Attendance.date <= business_date())
+
+        records = self.db.scalars(stmt).all()
+        closed: list[Attendance] = []
+
+        try:
+            for rec in records:
+                ci = rec.clock_in
+                if ci is None:
+                    continue
+                if ci.tzinfo is None:
+                    ci = ci.replace(tzinfo=timezone.utc)
+                expected_out = ci + timedelta(hours=max_hours)
+                if now < expected_out:
+                    continue  # not yet overdue
+
+                rec.clock_out = expected_out
+                rec.notes = (
+                    (rec.notes + "\n" if rec.notes else "")
+                    + f"Auto clock-out: missed checkout (system-closed after {max_hours:.0f}h at {expected_out.strftime('%H:%M')} UTC; overtime not credited)"
+                )
+                self._apply_hours(rec, rule_obj)
+                # System-closed records must NOT fabricate overtime.
+                rec.overtime_hours = 0.0
+                self._apply_half_day_status(rec, rule_obj)
+                closed.append(rec)
+
+                AuditService.log(
+                    self.db,
+                    "attendance",
+                    rec.id,
+                    "AUTO_CLOCK_OUT",
+                    performed_by=self.current_user_id,
+                    old_value={"clock_out": None},
+                    new_value={
+                        "employee_id": str(rec.employee_id),
+                        "date": str(rec.date),
+                        "clock_out": expected_out.isoformat(),
+                        "reason": "missed_checkout",
+                        "max_hours": max_hours,
+                        "system_closed": True,
+                        "overtime_hours": 0.0,
+                    },
+                )
+
+            if closed:
+                self.db.commit()
+                for rec in closed:
+                    self.db.refresh(rec)
+                    self.db.refresh(rec, attribute_names=["employee"])
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return [_build_response(r) for r in closed]
+
     def clock_in(
         self, employee_id: uuid.UUID, notes: str | None = None
     ) -> AttendanceResponse:
@@ -349,7 +485,9 @@ class AttendanceService:
             self.db.add(rule_obj)
             self.db.flush()
 
-        today = _now_utc().date()
+        # Key the attendance row on the IST business date; store the timestamp
+        # itself as UTC (aware) below.
+        today = business_date()
 
         # Guard: prevent overwriting an existing clock-in
         existing = self.db.scalar(
@@ -376,8 +514,6 @@ class AttendanceService:
 
         try:
             self.db.flush()
-            self.db.commit()
-            self.db.refresh(record)
             self.db.refresh(record, attribute_names=["employee"])
             AuditService.log(
                 self.db,
@@ -393,6 +529,9 @@ class AttendanceService:
                     "late_by_minutes": record.late_by_minutes,
                 },
             )
+            self.db.commit()
+            self.db.refresh(record)
+            self.db.refresh(record, attribute_names=["employee"])
         except Exception:
             self.db.rollback()
             raise
@@ -407,12 +546,21 @@ class AttendanceService:
             self.db.add(rule_obj)
             self.db.flush()
 
-        today = _now_utc().date()
+        # H3 cross-midnight clock-out: pick the most recent open attendance row
+        # (clock_in set, clock_out NULL) whose clock_in is within the last ~36h,
+        # rather than strictly today's row.  This lets a shift that started
+        # yesterday (IST) be closed after midnight.
+        now = _now_utc()
+        window_start = now - timedelta(hours=36)
         record = self.db.scalars(
-            select(Attendance).where(
+            select(Attendance)
+            .where(
                 Attendance.employee_id == employee_id,
-                Attendance.date == today,
+                Attendance.clock_in.isnot(None),
+                Attendance.clock_out.is_(None),
+                Attendance.clock_in >= window_start,
             )
+            .order_by(Attendance.clock_in.desc())
         ).first()
 
         if not record or record.clock_in is None:
@@ -420,16 +568,17 @@ class AttendanceService:
                 "No clock-in record found for today. Please contact HR to record your attendance manually."
             )
 
-        now = _now_utc()
         record.clock_out = now
         record.marked_by = self.current_user_id
 
         self._apply_hours(record, rule_obj)
+        self._apply_half_day_status(record, rule_obj)
+
+        # Rule 8: force-close any open break for this employee (compute duration).
+        self._close_open_breaks(employee_id)
 
         try:
             self.db.flush()
-            self.db.commit()
-            self.db.refresh(record)
             self.db.refresh(record, attribute_names=["employee"])
             AuditService.log(
                 self.db,
@@ -439,14 +588,282 @@ class AttendanceService:
                 performed_by=self.current_user_id,
                 new_value={
                     "employee_id": str(employee_id),
-                    "date": str(today),
+                    "date": str(record.date),
                     "clock_out": now.isoformat(),
                     "total_hours": float(record.total_hours or 0),
                     "overtime_hours": float(record.overtime_hours or 0),
+                    "status": record.status,
                 },
             )
+            self.db.commit()
+            self.db.refresh(record)
+            self.db.refresh(record, attribute_names=["employee"])
         except Exception:
             self.db.rollback()
             raise
 
         return _build_response(record)
+
+    def _close_open_breaks(self, employee_id: uuid.UUID) -> None:
+        """Force-close any open (break_end IS NULL) breaks for the employee,
+        computing their duration.  Handles stale prior-day open breaks too.
+        Does NOT commit — the caller commits within its own transaction."""
+        from app.models.employee_break import EmployeeBreak
+
+        now = _now_utc()
+        open_breaks = self.db.scalars(
+            select(EmployeeBreak).where(
+                EmployeeBreak.employee_id == employee_id,
+                EmployeeBreak.break_end.is_(None),
+            )
+        ).all()
+        for brk in open_breaks:
+            start = brk.break_start
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            brk.break_end = now
+            brk.duration_minutes = max(0, int((now - start).total_seconds() / 60.0))
+            AuditService.log(
+                self.db,
+                "employee_break",
+                brk.id,
+                "BREAK_FORCE_CLOSE",
+                performed_by=self.current_user_id,
+                new_value={
+                    "reason": "clock_out",
+                    "break_end": now.isoformat(),
+                    "duration_minutes": brk.duration_minutes,
+                },
+            )
+        if open_breaks:
+            self.db.flush()
+
+    # ── Missed clock-out request flow ─────────────────────────────────────────
+
+    def _build_mcr_response(self, req: MissedClockoutRequest) -> MissedClockoutRequestResponse:
+        emp = req.employee
+        employee_name: str | None = None
+        employee_code: str | None = None
+        if emp:
+            parts = [emp.first_name or "", emp.last_name or ""]
+            employee_name = " ".join(p for p in parts if p).strip() or None
+            employee_code = emp.employee_code
+        return MissedClockoutRequestResponse(
+            id=req.id,
+            employee_id=req.employee_id,
+            employee_name=employee_name,
+            employee_code=employee_code,
+            attendance_date=req.attendance_date,
+            requested_clock_out=req.requested_clock_out,
+            reason=req.reason,
+            status=req.status,
+            reviewed_by=req.reviewed_by,
+            reviewed_at=req.reviewed_at,
+            review_notes=req.review_notes,
+            created_at=req.created_at,
+        )
+
+    def submit_missed_clockout_request(
+        self, employee_id: uuid.UUID, data: MissedClockoutRequestCreate
+    ) -> MissedClockoutRequestResponse:
+        self._get_employee_or_raise(employee_id)
+
+        record = self.db.scalars(
+            select(Attendance).where(
+                Attendance.employee_id == employee_id,
+                Attendance.date == data.attendance_date,
+            )
+        ).first()
+        if not record or record.clock_in is None:
+            raise ValueError(
+                f"No clock-in found for {data.attendance_date}. "
+                "HR can manually mark your attendance instead."
+            )
+        if record.clock_out is not None:
+            raise ValueError(f"A clock-out already exists for {data.attendance_date}.")
+
+        ci = record.clock_in
+        if ci.tzinfo is None:
+            ci = ci.replace(tzinfo=timezone.utc)
+        rco = data.requested_clock_out
+        if rco.tzinfo is None:
+            rco = rco.replace(tzinfo=timezone.utc)
+        if rco <= ci:
+            raise ValueError("Requested clock-out time must be after your clock-in time.")
+        if rco > _now_utc():
+            raise ValueError("Requested clock-out time cannot be in the future.")
+
+        existing_pending = self.db.scalars(
+            select(MissedClockoutRequest).where(
+                MissedClockoutRequest.employee_id == employee_id,
+                MissedClockoutRequest.attendance_date == data.attendance_date,
+                MissedClockoutRequest.status == "PENDING",
+            )
+        ).first()
+        if existing_pending:
+            raise ValueError(
+                "You already have a pending missed clock-out request for this date."
+            )
+
+        req = MissedClockoutRequest(
+            employee_id=employee_id,
+            attendance_date=data.attendance_date,
+            requested_clock_out=rco,
+            reason=data.reason,
+            status="PENDING",
+        )
+        self.db.add(req)
+        try:
+            self.db.flush()
+            self.db.refresh(req, attribute_names=["employee"])
+            AuditService.log(
+                self.db,
+                "missed_clockout_request",
+                req.id,
+                "CREATE",
+                performed_by=self.current_user_id,
+                new_value={
+                    "employee_id": str(employee_id),
+                    "attendance_date": str(data.attendance_date),
+                    "requested_clock_out": rco.isoformat(),
+                    "reason": data.reason,
+                },
+            )
+            self.db.commit()
+            self.db.refresh(req)
+            self.db.refresh(req, attribute_names=["employee"])
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return self._build_mcr_response(req)
+
+    def list_missed_clockout_requests(
+        self,
+        status: str | None = None,
+        employee_id: uuid.UUID | None = None,
+        skip: int = 0,
+        limit: int = 200,
+    ) -> list[MissedClockoutRequestResponse]:
+        skip = max(0, skip)
+        limit = max(1, min(limit, 200))
+        stmt = (
+            select(MissedClockoutRequest)
+            .options(selectinload(MissedClockoutRequest.employee))
+            .order_by(MissedClockoutRequest.created_at.desc())
+        )
+        if status:
+            stmt = stmt.where(MissedClockoutRequest.status == status)
+        if employee_id:
+            stmt = stmt.where(MissedClockoutRequest.employee_id == employee_id)
+        stmt = stmt.offset(skip).limit(limit)
+        requests = self.db.scalars(stmt).all()
+        return [self._build_mcr_response(r) for r in requests]
+
+    def approve_missed_clockout_request(
+        self,
+        request_id: uuid.UUID,
+        review_notes: str | None = None,
+    ) -> MissedClockoutRequestResponse:
+        req = self.db.get(MissedClockoutRequest, request_id)
+        if not req:
+            raise ValueError("Request not found.")
+        if req.status != "PENDING":
+            raise ValueError(f"Request is already {req.status}.")
+
+        # H9: an employee cannot approve their own missed clock-out request.
+        if self.current_user_id is not None and req.employee_id == self.current_user_id:
+            raise ValueError("You cannot approve your own missed clock-out request.")
+
+        rule_obj = self.db.scalars(select(AttendanceRule)).first()
+        if not rule_obj:
+            rule_obj = AttendanceRule()
+            self.db.add(rule_obj)
+            self.db.flush()
+
+        attendance = self.db.scalars(
+            select(Attendance).where(
+                Attendance.employee_id == req.employee_id,
+                Attendance.date == req.attendance_date,
+            )
+        ).first()
+        if attendance:
+            attendance.clock_out = req.requested_clock_out
+            attendance.notes = (
+                (attendance.notes + "\n" if attendance.notes else "")
+                + f"Clock-out approved by admin (missed clockout request #{str(req.id)[:8]})"
+            )
+            self._apply_hours(attendance, rule_obj)
+            self._apply_half_day_status(attendance, rule_obj)
+
+        now = _now_utc()
+        req.status = "APPROVED"
+        req.reviewed_by = self.current_user_id
+        req.reviewed_at = now
+        req.review_notes = review_notes
+
+        try:
+            self.db.flush()
+            self.db.refresh(req, attribute_names=["employee"])
+            AuditService.log(
+                self.db,
+                "missed_clockout_request",
+                req.id,
+                "APPROVE",
+                performed_by=self.current_user_id,
+                new_value={
+                    "employee_id": str(req.employee_id),
+                    "attendance_date": str(req.attendance_date),
+                    "approved_clock_out": req.requested_clock_out.isoformat(),
+                    "review_notes": review_notes,
+                },
+            )
+            self.db.commit()
+            self.db.refresh(req)
+            self.db.refresh(req, attribute_names=["employee"])
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return self._build_mcr_response(req)
+
+    def reject_missed_clockout_request(
+        self,
+        request_id: uuid.UUID,
+        review_notes: str | None = None,
+    ) -> MissedClockoutRequestResponse:
+        req = self.db.get(MissedClockoutRequest, request_id)
+        if not req:
+            raise ValueError("Request not found.")
+        if req.status != "PENDING":
+            raise ValueError(f"Request is already {req.status}.")
+
+        now = _now_utc()
+        req.status = "REJECTED"
+        req.reviewed_by = self.current_user_id
+        req.reviewed_at = now
+        req.review_notes = review_notes
+
+        try:
+            self.db.flush()
+            self.db.refresh(req, attribute_names=["employee"])
+            AuditService.log(
+                self.db,
+                "missed_clockout_request",
+                req.id,
+                "REJECT",
+                performed_by=self.current_user_id,
+                new_value={
+                    "employee_id": str(req.employee_id),
+                    "attendance_date": str(req.attendance_date),
+                    "review_notes": review_notes,
+                },
+            )
+            self.db.commit()
+            self.db.refresh(req)
+            self.db.refresh(req, attribute_names=["employee"])
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return self._build_mcr_response(req)

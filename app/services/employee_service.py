@@ -22,13 +22,15 @@ from app.schemas.employee import (
 )
 from app.services.audit_service import AuditService
 
-# Valid status transitions state machine
+# Valid status transitions state machine.
+# Every non-terminal status may transition to RESIGNED or TERMINATED so the
+# offboarding workflow is never blocked by the state machine.
 STATUS_TRANSITIONS = {
-    "ACTIVE": {"PROBATION", "ON_LEAVE", "NOTICE_PERIOD", "SUSPENDED"},
-    "PROBATION": {"ACTIVE", "ON_LEAVE", "NOTICE_PERIOD", "TERMINATED"},
-    "ON_LEAVE": {"ACTIVE", "NOTICE_PERIOD"},
-    "SUSPENDED": {"ACTIVE", "TERMINATED"},
-    "NOTICE_PERIOD": {"RESIGNED"},
+    "ACTIVE": {"PROBATION", "ON_LEAVE", "NOTICE_PERIOD", "SUSPENDED", "RESIGNED", "TERMINATED"},
+    "PROBATION": {"ACTIVE", "ON_LEAVE", "NOTICE_PERIOD", "SUSPENDED", "RESIGNED", "TERMINATED"},
+    "ON_LEAVE": {"ACTIVE", "NOTICE_PERIOD", "SUSPENDED", "RESIGNED", "TERMINATED"},
+    "SUSPENDED": {"ACTIVE", "NOTICE_PERIOD", "RESIGNED", "TERMINATED"},
+    "NOTICE_PERIOD": {"ACTIVE", "SUSPENDED", "RESIGNED", "TERMINATED"},
     "RESIGNED": set(),
     "TERMINATED": set(),
 }
@@ -53,18 +55,17 @@ class EmployeeService:
         raise ValueError(f"Employee with id or code '{id_str}' not found")
 
     def _generate_employee_code(self) -> str:
-        from sqlalchemy import func as _func
-        max_code = self.repo.db.scalar(
-            select(_func.max(Employee.employee_code))
+        from sqlalchemy import func as _func, cast, Integer
+        # Compute the max numeric suffix so codes stay monotonic beyond EMP-999.
+        # (String MAX would rank "EMP-99" above "EMP-100".)
+        max_num = self.repo.db.scalar(
+            select(
+                _func.max(
+                    cast(_func.split_part(Employee.employee_code, "-", 2), Integer)
+                )
+            ).where(Employee.employee_code.like("EMP-%"))
         )
-        if max_code:
-            try:
-                last_num = int(max_code.split("-")[1])
-            except (IndexError, ValueError):
-                last_num = 0
-            next_num = last_num + 1
-        else:
-            next_num = 1
+        next_num = (max_num or 0) + 1
         return f"EMP-{next_num:03d}"
 
     def _build_list_response(self, employee: Employee) -> EmployeeListResponse:
@@ -208,6 +209,10 @@ class EmployeeService:
         if status not in STATUS_TRANSITIONS:
             raise ValueError(f"Invalid account status: {status}")
 
+        # C2: privilege-escalation guard on create (new employee has no existing roles).
+        if data.role_ids:
+            self._validate_role_assignment(None, data.role_ids, existing_role_ids=set())
+
         is_dept_head = data.is_department_head
         team_id = data.team_id
         is_team_lead = data.is_team_lead
@@ -270,17 +275,17 @@ class EmployeeService:
                 )
                 self.db.add(new_member)
 
+            AuditService.log(
+                self.db, "employee", employee.id, "CREATE",
+                performed_by=self.current_user_id,
+                new_value={"employee_code": employee.employee_code, "email": data.email},
+            )
             self.db.commit()
             self.db.refresh(employee)
         except Exception:
             self.db.rollback()
             raise
 
-        AuditService.log(
-            self.db, "employee", employee.id, "CREATE",
-            performed_by=self.current_user_id,
-            new_value={"employee_code": employee.employee_code, "email": data.email},
-        )
         return EmployeeResponse.model_validate(employee)
 
     def update(self, id: UUID, data: EmployeeUpdate) -> EmployeeResponse:
@@ -307,9 +312,10 @@ class EmployeeService:
             if new_mgr:
                 self._validate_manager(new_mgr)
                 self._detect_circular_reporting(id, new_mgr)
-            self._record_reporting_change(
-                employee, employee.reporting_manager_id, new_mgr
-            )
+            if new_mgr != employee.reporting_manager_id:
+                self._record_reporting_change(
+                    employee, employee.reporting_manager_id, new_mgr
+                )
 
         if "password" in update_data:
             update_data["password_hash"] = get_password_hash(update_data.pop("password"))
@@ -317,10 +323,24 @@ class EmployeeService:
         if "account_status" in update_data:
             new_status = update_data["account_status"].upper()
             old_status = employee.account_status
+            # H6: terminal statuses must go through the offboarding wizard so that
+            # ownership transfers / blockers are handled. Reject direct PUT here.
+            if new_status in TERMINAL_STATUSES and old_status not in TERMINAL_STATUSES:
+                raise ValueError(
+                    "Cannot set a terminal status (RESIGNED/TERMINATED) via update. "
+                    "Use the offboarding workflow (/offboard/execute) instead."
+                )
             self._validate_status_transition(old_status, new_status)
             update_data["account_status"] = new_status
+            # Keep is_active consistent with the (non-terminal) status.
+            update_data["is_active"] = new_status not in TERMINAL_STATUSES
 
         role_ids = update_data.pop("role_ids", None)
+
+        # C2: privilege-escalation guard on update, BEFORE any mutation.
+        if role_ids is not None:
+            existing = {str(er.role_id) for er in self.repo.get_employee_roles(id)}
+            self._validate_role_assignment(id, role_ids, existing_role_ids=existing)
 
         is_dept_head = update_data.pop("is_department_head", None)
         team_id = update_data.pop("team_id", None)
@@ -444,12 +464,17 @@ class EmployeeService:
         _sensitive = ('password_hash', 'password', 'hashed_password')
         log_old = {k: v for k, v in old_values.items() if k not in _sensitive} if old_values else None
         log_new = {k: v for k, v in update_data.items() if k not in _sensitive} if update_data else None
-        AuditService.log(
-            self.db, "employee", id, "UPDATE",
-            performed_by=self.current_user_id,
-            old_value=log_old if log_old else None,
-            new_value=log_new if log_new else None,
-        )
+        try:
+            AuditService.log(
+                self.db, "employee", id, "UPDATE",
+                performed_by=self.current_user_id,
+                old_value=log_old if log_old else None,
+                new_value=log_new if log_new else None,
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
         return EmployeeResponse.model_validate(employee)
 
     def offboard_check(self, id: UUID) -> EmployeeOffboardCheck:
@@ -666,6 +691,7 @@ class EmployeeService:
         })
         AuditService.log(
             self.db, "employee", id, "DELETE",
+            performed_by=self.current_user_id,
             old_value={"account_status": old_status},
             new_value={"account_status": "TERMINATED"},
         )
@@ -756,6 +782,78 @@ class EmployeeService:
 
     # ---- Private: Validation Helpers ----
 
+    def _actor_is_super_admin(self) -> bool:
+        """True if the current actor holds any is_super_admin role."""
+        if not self.current_user_id:
+            return False
+        from app.models.role import Role
+        return bool(
+            self.db.scalar(
+                select(Role.id)
+                .join(EmployeeRole, EmployeeRole.role_id == Role.id)
+                .where(
+                    EmployeeRole.employee_id == self.current_user_id,
+                    EmployeeRole.is_active == True,
+                    Role.is_super_admin == True,
+                )
+                .limit(1)
+            )
+        )
+
+    def _validate_role_assignment(
+        self, target_id: UUID | None, new_role_ids: list, existing_role_ids: set | None = None
+    ) -> None:
+        """Guard against privilege escalation via role assignment (C2).
+
+        - Every role id supplied must reference an existing role.
+        - A non-super-admin actor may not grant a super-admin role.
+        - A non-super-admin actor may not add new roles to their OWN account.
+        Called BEFORE any mutation. `existing_role_ids` (as a set of str) lets us
+        detect newly-*added* roles on update so an unchanged role set is a no-op.
+        """
+        from app.models.role import Role
+
+        # Normalize incoming ids to strings for comparison.
+        incoming = {str(r) for r in new_role_ids}
+        if existing_role_ids is None:
+            newly_added = incoming
+        else:
+            newly_added = incoming - {str(r) for r in existing_role_ids}
+
+        # Validate every incoming role exists (reject unknown roles).
+        for rid_str in incoming:
+            try:
+                rid = UUID(rid_str)
+            except (ValueError, AttributeError):
+                raise ValueError(f"Invalid role id: {rid_str}")
+            role = self.db.get(Role, rid)
+            if not role:
+                raise ValueError(f"Role with id {rid_str} does not exist")
+
+        if not newly_added:
+            return  # No roles are being added — nothing to escalate.
+
+        actor_is_super = self._actor_is_super_admin()
+
+        # (b) An actor may not add roles to their own account (self-elevation),
+        # unless they are a super-admin.
+        if (
+            self.current_user_id
+            and target_id is not None
+            and str(target_id) == str(self.current_user_id)
+            and not actor_is_super
+        ):
+            raise ValueError("You cannot assign roles to your own account")
+
+        # (a) Only super-admins may grant a super-admin / higher-privileged role.
+        if not actor_is_super:
+            for rid_str in newly_added:
+                role = self.db.get(Role, UUID(rid_str))
+                if role and role.is_super_admin:
+                    raise ValueError(
+                        "Only a super-admin may grant the super-admin role"
+                    )
+
     def _validate_manager(self, manager_id: UUID) -> None:
         manager = self.repo.get_by_id(manager_id)
         if not manager:
@@ -827,10 +925,10 @@ class EmployeeService:
         self.db.add(record)
         self.db.flush()  # Changed from db.commit() - callers own the transaction boundary
 
-    def _sync_roles(self, employee: Employee, role_ids: list[str]) -> None:
+    def _sync_roles(self, employee: Employee, role_ids: list) -> None:
         existing_roles = self.repo.get_employee_roles(employee.id)
         existing_role_ids = {str(er.role_id) for er in existing_roles}
-        new_role_ids = set(role_ids)
+        new_role_ids = {str(r) for r in role_ids}
 
         # Roles to remove
         for er in existing_roles:

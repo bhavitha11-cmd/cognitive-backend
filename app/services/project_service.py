@@ -623,6 +623,9 @@ class ProjectService:
                 self.db.commit()
                 results["updated"] += 1
             except Exception as exc:
+                # Roll back the poisoned transaction first so this one failure
+                # doesn't cascade and fail every remaining project in the loop.
+                self.db.rollback()
                 logging.getLogger(__name__).warning(
                     "[ProjectService] recalculate_all failed for project %s: %s",
                     project.id, exc,

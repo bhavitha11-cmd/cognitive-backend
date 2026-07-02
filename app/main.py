@@ -61,11 +61,17 @@ root_logger.setLevel(LOG_LEVEL)
 root_logger.handlers.clear()
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(LOG_LEVEL)
-console_handler.setFormatter(logging.Formatter(
+formatter = logging.Formatter(
     "%(asctime)s  %(levelname)-8s [%(name)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-))
+)
+console_handler.setFormatter(formatter)
 root_logger.addHandler(console_handler)
+
+file_handler = logging.FileHandler(r"c:\Users\91891\OneDrive\Desktop\cognitive\uvicorn_live.log", encoding="utf-8")
+file_handler.setLevel(LOG_LEVEL)
+file_handler.setFormatter(formatter)
+root_logger.addHandler(file_handler)
 
 # Make uvicorn's loggers use our root handler for consistent format
 for log_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.default"):
@@ -77,6 +83,16 @@ for log_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.default"
 # Keep SQLAlchemy engine logs quiet unless DB_ECHO is on
 logging.getLogger("sqlalchemy.engine").setLevel(logging.DEBUG if settings.DB_ECHO else logging.WARNING)
 
+# NOTE (rate limiting): This is the app-level Limiter bound to app.state.limiter
+# and used by the RateLimitExceeded handler. Some routers (e.g. auth.py) currently
+# construct their OWN Limiter(key_func=get_remote_address) instance for their
+# @limiter.limit decorators. On a single server this works fine because each
+# instance keeps its own in-memory counters and the shared exception handler
+# formats the 429 response identically. Consolidating to one shared instance
+# would require editing those routers to import this `limiter`; that is left as a
+# low-priority cleanup and intentionally NOT done here to avoid changing startup
+# behavior. If moving to multiple workers, back the limiter with a shared store
+# (e.g. Redis via storage_uri) so counters are consistent across processes.
 limiter = Limiter(key_func=get_remote_address)
 
 logger = logging.getLogger(__name__)
@@ -167,9 +183,18 @@ async def audit_context_middleware(request: Request, call_next):
     return response
 
 
-# ── Startup ───────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def on_startup():
+    root_logger = logging.getLogger()
+    formatter = logging.Formatter(
+        "%(asctime)s  %(levelname)-8s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler = logging.FileHandler(r"c:\Users\91891\OneDrive\Desktop\cognitive\uvicorn_live.log", encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
     logger.info(f"[App] Starting {settings.PROJECT_NAME} v{settings.PROJECT_VERSION} (Environment: {settings.ENVIRONMENT})")
     logger.info(f"[CORS] Explicit origins: {origins}")
     if cors_origin_regex:
@@ -200,6 +225,10 @@ def on_startup():
             logger.warning(f"[Database] Attempt {attempt}/{max_retries} failed, retrying in {retry_delay}s...")
             time.sleep(retry_delay)
 
+    # NOTE: Running migrations on boot is acceptable for this single-server
+    # deployment. In a multi-worker / multi-instance setup this should be moved
+    # to an explicit deploy step (run `alembic upgrade head` once before starting
+    # workers) to avoid concurrent workers racing to apply the same migrations.
     logger.info("[Database] Running Alembic migrations...")
     from alembic.config import Config
     from alembic import command

@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 from app.database.session import get_db
 from app.dependencies import get_current_user, require_permission
 from app.core.rbac import UserContext, require_data_access, DataAccessLevel
-from app.schemas.attendance import AttendanceMarkRequest, AttendanceBulkMarkRequest, AttendanceRuleUpdate
+from app.schemas.attendance import (
+    AttendanceMarkRequest,
+    AttendanceBulkMarkRequest,
+    AttendanceRuleUpdate,
+    MissedClockoutRequestCreate,
+    MissedClockoutRequestReview,
+)
 from app.schemas.common import APIResponse
 
 router = APIRouter(
@@ -179,6 +185,8 @@ def list_attendance(
     to_date: Optional[date] = Query(None),
     record_date: Optional[date] = Query(None, alias="date"),
     department_id: Optional[uuid.UUID] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=200),
     service=Depends(_get_service),
     user_ctx: UserContext = Depends(require_data_access),
 ):
@@ -194,13 +202,19 @@ def list_attendance(
 
     try:
         if employee_id:
-            records = service.get_by_employee(employee_id, from_date, to_date)
+            records = service.get_by_employee(
+                employee_id, from_date, to_date, skip=skip, limit=limit
+            )
         elif record_date:
-            records = service.get_by_date(record_date, department_id)
+            records = service.get_by_date(
+                record_date, department_id, skip=skip, limit=limit
+            )
         else:
             # Default: today's attendance, optionally filtered by department
             from datetime import date as _date
-            records = service.get_by_date(_date.today(), department_id)
+            records = service.get_by_date(
+                _date.today(), department_id, skip=skip, limit=limit
+            )
     except ValueError as e:
         detail = str(e)
         code = (
@@ -262,6 +276,119 @@ def get_my_attendance(
         success=True,
         message="My attendance retrieved successfully",
         data={"attendance": record.model_dump() if record else None},
+    )
+
+
+@router.post("/missed-clockout-request", response_model=APIResponse)
+def submit_missed_clockout_request(
+    body: MissedClockoutRequestCreate,
+    db: Session = Depends(get_db),
+    current_user_id: str = Depends(get_current_user),
+    service=Depends(_get_service),
+):
+    """Employee submits a request to log a missed clock-out for a past date."""
+    employee_id = _resolve_employee_id(current_user_id, db)
+    try:
+        req = service.submit_missed_clockout_request(employee_id, body)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Missed clock-out request submitted. Awaiting admin approval.",
+        data={"request": req.model_dump()},
+    )
+
+
+@router.get(
+    "/missed-clockout-requests",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Attendance", "view"))],
+)
+def list_missed_clockout_requests(
+    request_status: Optional[str] = Query(None, alias="status"),
+    employee_id: Optional[uuid.UUID] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=200),
+    service=Depends(_get_service),
+):
+    """Admin: list missed clock-out requests, optionally filtered by status or employee."""
+    requests = service.list_missed_clockout_requests(
+        status=request_status, employee_id=employee_id, skip=skip, limit=limit
+    )
+    return APIResponse(
+        success=True,
+        message="Missed clock-out requests retrieved",
+        data={"requests": [r.model_dump() for r in requests], "total": len(requests)},
+    )
+
+
+@router.post(
+    "/missed-clockout-requests/{request_id}/approve",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Attendance", "edit"))],
+)
+def approve_missed_clockout_request(
+    request_id: uuid.UUID,
+    body: MissedClockoutRequestReview = MissedClockoutRequestReview(),
+    service=Depends(_get_service),
+):
+    """Admin: approve a missed clock-out request and apply the clock-out to attendance."""
+    try:
+        req = service.approve_missed_clockout_request(request_id, review_notes=body.review_notes)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Request approved. Clock-out applied to attendance record.",
+        data={"request": req.model_dump()},
+    )
+
+
+@router.post(
+    "/missed-clockout-requests/{request_id}/reject",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Attendance", "edit"))],
+)
+def reject_missed_clockout_request(
+    request_id: uuid.UUID,
+    body: MissedClockoutRequestReview = MissedClockoutRequestReview(),
+    service=Depends(_get_service),
+):
+    """Admin: reject a missed clock-out request."""
+    try:
+        req = service.reject_missed_clockout_request(request_id, review_notes=body.review_notes)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Request rejected.",
+        data={"request": req.model_dump()},
+    )
+
+
+@router.post(
+    "/auto-close-missed",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Attendance", "edit"))],
+)
+def auto_close_missed_clockouts(
+    max_hours: float = Query(10.0, ge=1.0, le=24.0, description="Hours after clock-in before auto-closing"),
+    target_date: Optional[date] = Query(None, description="Restrict to a specific date; omit for all open records"),
+    service=Depends(_get_service),
+):
+    """
+    Admin endpoint: auto clock-out all employees who forgot to clock out.
+    Safe to call on a schedule (e.g. nightly cron at midnight) or ad-hoc.
+    """
+    closed = service.auto_close_missed_clockouts(max_hours=max_hours, target_date=target_date)
+    return APIResponse(
+        success=True,
+        message=f"{len(closed)} missed clock-out(s) auto-closed",
+        data={
+            "closed_count": len(closed),
+            "max_hours": max_hours,
+            "records": [r.model_dump() for r in closed],
+        },
     )
 
 

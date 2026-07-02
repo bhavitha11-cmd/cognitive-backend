@@ -20,6 +20,41 @@ class RoleService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _actor_role_ids(self, actor_id: uuid.UUID) -> set[uuid.UUID]:
+        rows = self.db.scalars(
+            select(EmployeeRole.role_id).where(
+                EmployeeRole.employee_id == actor_id,
+                EmployeeRole.is_active == True,
+            )
+        ).all()
+        return {r for r in rows}
+
+    def actor_is_super_admin(self, actor_id: uuid.UUID | None) -> bool:
+        if not actor_id:
+            return False
+        role_ids = self._actor_role_ids(actor_id)
+        if not role_ids:
+            return False
+        return bool(
+            self.db.scalar(
+                select(Role.id).where(
+                    Role.id.in_(role_ids),
+                    Role.is_super_admin == True,
+                ).limit(1)
+            )
+        )
+
+    def assert_can_edit_role_permissions(self, role_id: uuid.UUID, actor_id: uuid.UUID | None) -> None:
+        """Guard against a non-super-admin editing permissions of a role they themselves hold
+        (a second privilege-escalation channel). Super-admins are exempt."""
+        if self.actor_is_super_admin(actor_id):
+            return
+        if actor_id and role_id in self._actor_role_ids(actor_id):
+            raise PermissionError(
+                "You cannot modify the permissions of a role you currently hold. "
+                "Ask a super-admin to make this change."
+            )
+
     def get_all(self) -> list[Role]:
         query = (
             select(Role)
@@ -56,13 +91,18 @@ class RoleService:
             hierarchy_level=hierarchy_level,
             is_active=data.is_active,
             is_system_role=False,
+            data_access_level=data.data_access_level,
         )
         self.db.add(db_role)
-        self.db.commit()
+        try:
+            self.db.flush()
+            AuditService.log(self.db, "role", db_role.id, "CREATE",
+                             new_value={"name": data.name, "role_code": role_code})
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(db_role)
-
-        AuditService.log(self.db, "role", db_role.id, "CREATE",
-                         new_value={"name": data.name, "role_code": role_code})
         return db_role
 
     def update(self, id: uuid.UUID, data: RoleUpdate) -> Role:
@@ -87,6 +127,9 @@ class RoleService:
 
         if data.description is not None:
             db_role.description = data.description
+        if data.data_access_level is not None and data.data_access_level != db_role.data_access_level:
+            old_values["data_access_level"] = db_role.data_access_level
+            db_role.data_access_level = data.data_access_level
         if data.is_active is not None:
             if not data.is_active and db_role.child_roles:
                 active_children = [c.name for c in db_role.child_roles if c.is_active]
@@ -118,12 +161,16 @@ class RoleService:
             update_child_hierarchies(self.db, db_role)
 
         self.db.add(db_role)
-        self.db.commit()
+        try:
+            self.db.flush()
+            AuditService.log(self.db, "role", id, "UPDATE",
+                             old_value=old_values if old_values else None,
+                             new_value={"name": db_role.name, "role_code": db_role.role_code})
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(db_role)
-
-        AuditService.log(self.db, "role", id, "UPDATE",
-                         old_value=old_values if old_values else None,
-                         new_value={"name": db_role.name, "role_code": db_role.role_code})
         return db_role
 
     def delete(self, id: uuid.UUID) -> None:
@@ -145,5 +192,10 @@ class RoleService:
             self.db.add(child)
             update_child_hierarchies(self.db, child)
         self.db.delete(db_role)
-        self.db.commit()
-        AuditService.log(self.db, "role", id, "DELETE")
+        try:
+            self.db.flush()
+            AuditService.log(self.db, "role", id, "DELETE")
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise

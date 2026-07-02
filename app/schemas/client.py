@@ -5,6 +5,12 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
+class AdditionalContactSchema(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    email: str = Field(..., max_length=200)
+    phone: str = Field(..., min_length=1, max_length=50)
+
+
 class ClientCreate(BaseModel):
     client_code: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=200)
@@ -13,6 +19,7 @@ class ClientCreate(BaseModel):
     contact_email: EmailStr = Field(...)
     contact_phone: str = Field(..., min_length=1, max_length=50)
     alternate_phone: str | None = Field(None, max_length=50)
+    additional_contacts: list[AdditionalContactSchema] | None = Field(default_factory=list)
     country: str = Field(..., min_length=1, max_length=100)
     address: str = Field(..., min_length=1, max_length=1000)
     notes: str | None = Field(None, max_length=5000)
@@ -26,11 +33,12 @@ class ClientUpdate(BaseModel):
     contact_email: EmailStr | None = None
     contact_phone: str | None = Field(None, min_length=1, max_length=50)
     alternate_phone: str | None = Field(None, max_length=50)
+    additional_contacts: list[AdditionalContactSchema] | None = None
     country: str | None = Field(None, min_length=1, max_length=100)
     address: str | None = Field(None, min_length=1, max_length=1000)
     notes: str | None = Field(None, max_length=5000)
     is_active: bool | None = None
-    status: Optional[Literal["ACTIVE", "INACTIVE", "SUSPENDED"]] = None
+    status: Optional[Literal["Active", "Inactive"]] = None
     deactivation_reason: str | None = Field(None, max_length=1000)
 
 
@@ -43,6 +51,7 @@ class ClientResponse(BaseModel):
     contact_email: str | None = None
     contact_phone: str | None = None
     alternate_phone: str | None = None
+    additional_contacts: list[AdditionalContactSchema] | None = None
     country: str | None = None
     address: str | None = None
     notes: str | None = None

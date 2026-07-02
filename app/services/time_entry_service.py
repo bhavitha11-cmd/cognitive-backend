@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.employee import Employee
@@ -78,21 +79,31 @@ class TimeEntryService:
                 status="DRAFT",
             )
             self.db.add(entry)
-            self.db.flush()
+            try:
+                self.db.flush()
+            except IntegrityError:
+                # Unique(employee_id, task_id, date) constraint — race with a
+                # concurrent insert that slipped past the app-level pre-check.
+                self.db.rollback()
+                raise ValueError("Time entry already exists for this task and date")
 
             results.append(self._build_response(entry))
 
-        self.db.commit()
+        try:
+            touched_task_ids = {e.task_id for e in entries}
+            for tid in touched_task_ids:
+                self._recompute_task_actual_hours(tid)
 
-        touched_task_ids = {e.task_id for e in entries}
-        for tid in touched_task_ids:
-            self._recompute_task_actual_hours(tid)
+            AuditService.log(
+                self.db, "time_entry", None, "BATCH_CREATE",
+                performed_by=self.current_user_id,
+                new_value={"count": len(entries), "task_ids": [str(t) for t in touched_task_ids]},
+            )
 
-        AuditService.log(
-            self.db, "time_entry", None, "BATCH_CREATE",
-            performed_by=self.current_user_id,
-            new_value={"count": len(entries), "task_ids": [str(t) for t in touched_task_ids]},
-        )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         return results
 
@@ -191,24 +202,34 @@ class TimeEntryService:
             status="DRAFT",
         )
         self.db.add(entry)
-        self.db.commit()
-        self.db.refresh(entry)
+        try:
+            self.db.flush()  # surface the Unique(employee_id, task_id, date) violation here
+        except IntegrityError:
+            # Race with a concurrent insert that slipped past the pre-check above.
+            self.db.rollback()
+            raise ValueError("Time entry already exists for this task and date")
 
-        self._recompute_task_actual_hours(task.id)
+        try:
+            self._recompute_task_actual_hours(task.id)
 
-        AuditService.log(
-            self.db, "time_entry", entry.id, "CREATE",
-            performed_by=self.current_user_id,
-            new_value={
-                "employee_id": str(employee_id),
-                "task_id": str(data.task_id),
-                "project_id": str(project_id),
-                "date": str(data.date),
-                "hours_spent": float(data.hours_spent),
-                "entry_type": data.entry_type,
-                "duplicate_warning": duplicate_exists > 0,
-            },
-        )
+            AuditService.log(
+                self.db, "time_entry", entry.id, "CREATE",
+                performed_by=self.current_user_id,
+                new_value={
+                    "employee_id": str(employee_id),
+                    "task_id": str(data.task_id),
+                    "project_id": str(project_id),
+                    "date": str(data.date),
+                    "hours_spent": float(data.hours_spent),
+                    "entry_type": data.entry_type,
+                    "duplicate_warning": duplicate_exists > 0,
+                },
+            )
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         return self._build_response(self._fetch_entry(entry.id))
 
@@ -237,17 +258,20 @@ class TimeEntryService:
         for key, value in update_data.items():
             setattr(entry, key, value)
 
-        self.db.commit()
-        self.db.refresh(entry)
+        try:
+            self._recompute_task_actual_hours(entry.task_id)
 
-        self._recompute_task_actual_hours(entry.task_id)
+            AuditService.log(
+                self.db, "time_entry", id, "UPDATE",
+                performed_by=self.current_user_id,
+                old_value=old_values,
+                new_value=update_data,
+            )
 
-        AuditService.log(
-            self.db, "time_entry", id, "UPDATE",
-            performed_by=self.current_user_id,
-            old_value=old_values,
-            new_value=update_data,
-        )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         return self._build_response(self._fetch_entry(id))
 
@@ -269,22 +293,27 @@ class TimeEntryService:
 
         task_id = entry.task_id
 
-        AuditService.log(
-            self.db, "time_entry", id, "DELETE",
-            performed_by=self.current_user_id,
-            old_value={
-                "employee_id": str(entry.employee_id),
-                "task_id": str(task_id),
-                "date": str(entry.date),
-                "hours_spent": float(entry.hours_spent),
-                "status": entry.status,
-            },
-        )
+        try:
+            AuditService.log(
+                self.db, "time_entry", id, "DELETE",
+                performed_by=self.current_user_id,
+                old_value={
+                    "employee_id": str(entry.employee_id),
+                    "task_id": str(task_id),
+                    "date": str(entry.date),
+                    "hours_spent": float(entry.hours_spent),
+                    "status": entry.status,
+                },
+            )
 
-        self.db.delete(entry)
-        self.db.commit()
+            self.db.delete(entry)
+            self.db.flush()
+            self._recompute_task_actual_hours(task_id)
 
-        self._recompute_task_actual_hours(task_id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
     # ── Submit ─────────────────────────────────────────────────────────────────
 
@@ -304,14 +333,18 @@ class TimeEntryService:
 
         entry.status = "SUBMITTED"
         entry.submitted_at = datetime.now(timezone.utc)
-        self.db.commit()
-        self.db.refresh(entry)
 
-        AuditService.log(
-            self.db, "time_entry", id, "SUBMIT",
-            performed_by=self.current_user_id,
-            new_value={"status": "SUBMITTED", "submitted_at": str(entry.submitted_at)},
-        )
+        try:
+            AuditService.log(
+                self.db, "time_entry", id, "SUBMIT",
+                performed_by=self.current_user_id,
+                new_value={"status": "SUBMITTED", "submitted_at": str(entry.submitted_at)},
+            )
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         return self._build_response(self._fetch_entry(id))
 
@@ -331,21 +364,25 @@ class TimeEntryService:
         entry.approved_by = approved_by_id
         entry.approved_at = datetime.now(timezone.utc)
         entry.rejection_reason = None
-        self.db.commit()
-        self.db.refresh(entry)
 
-        # Recompute to reflect approved status in task hours
-        self._recompute_task_actual_hours(entry.task_id)
+        try:
+            # Recompute to reflect approved status in task hours
+            self._recompute_task_actual_hours(entry.task_id)
 
-        AuditService.log(
-            self.db, "time_entry", id, "APPROVE",
-            performed_by=approved_by_id,
-            new_value={
-                "status": "APPROVED",
-                "approved_by": str(approved_by_id),
-                "approved_at": str(entry.approved_at),
-            },
-        )
+            AuditService.log(
+                self.db, "time_entry", id, "APPROVE",
+                performed_by=approved_by_id,
+                new_value={
+                    "status": "APPROVED",
+                    "approved_by": str(approved_by_id),
+                    "approved_at": str(entry.approved_at),
+                },
+            )
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         return self._build_response(self._fetch_entry(id))
 
@@ -364,17 +401,21 @@ class TimeEntryService:
         old_status = entry.status
         entry.status = "REJECTED"
         entry.rejection_reason = reason
-        self.db.commit()
-        self.db.refresh(entry)
 
-        self._recompute_task_actual_hours(entry.task_id)
+        try:
+            self._recompute_task_actual_hours(entry.task_id)
 
-        AuditService.log(
-            self.db, "time_entry", id, "REJECT",
-            performed_by=rejected_by_id,
-            old_value={"status": old_status},
-            new_value={"status": "REJECTED", "rejection_reason": reason},
-        )
+            AuditService.log(
+                self.db, "time_entry", id, "REJECT",
+                performed_by=rejected_by_id,
+                old_value={"status": old_status},
+                new_value={"status": "REJECTED", "rejection_reason": reason},
+            )
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         return self._build_response(self._fetch_entry(id))
 
@@ -482,10 +523,15 @@ class TimeEntryService:
             ProjectMetricsService.recalculate(self.db, project_id)
             self.db.flush()  # Changed from db.commit() - callers own the transaction boundary
         except Exception:
-            logging.getLogger(__name__).warning(
+            # Do NOT swallow: a failed metrics recalc means the task/project
+            # state is inconsistent. Log and re-raise so the caller's
+            # try/except rolls back the whole transaction and never presents
+            # success on stale metrics.
+            logging.getLogger(__name__).error(
                 "[TimeEntryService] project_metrics recalc failed for project %s",
                 project_id, exc_info=True,
             )
+            raise
 
     def _fetch_entry(self, id: UUID) -> TimeEntry | None:
         return self.db.scalars(
@@ -585,12 +631,16 @@ class TimeEntryService:
             count += 1
             
         if count > 0:
-            self.db.commit()
-            AuditService.log(
-                self.db, "time_entry", None, "BATCH_SUBMIT_WEEK",
-                performed_by=self.current_user_id,
-                new_value={"date_from": str(date_from), "date_to": str(date_to), "count": count}
-            )
+            try:
+                AuditService.log(
+                    self.db, "time_entry", None, "BATCH_SUBMIT_WEEK",
+                    performed_by=self.current_user_id,
+                    new_value={"date_from": str(date_from), "date_to": str(date_to), "count": count}
+                )
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return count
 
     def approve_week(self, employee_id: UUID, date_from: date, date_to: date) -> int:
@@ -617,18 +667,21 @@ class TimeEntryService:
             count += 1
             
         if count > 0:
-            self.db.commit()
-            
-            # Recompute hours for all touched tasks
-            task_ids = {entry.task_id for entry in entries}
-            for tid in task_ids:
-                self._recompute_task_actual_hours(tid)
-                
-            AuditService.log(
-                self.db, "time_entry", None, "BATCH_APPROVE_WEEK",
-                performed_by=self.current_user_id,
-                new_value={"employee_id": str(employee_id), "date_from": str(date_from), "date_to": str(date_to), "count": count}
-            )
+            try:
+                # Recompute hours for all touched tasks
+                task_ids = {entry.task_id for entry in entries}
+                for tid in task_ids:
+                    self._recompute_task_actual_hours(tid)
+
+                AuditService.log(
+                    self.db, "time_entry", None, "BATCH_APPROVE_WEEK",
+                    performed_by=self.current_user_id,
+                    new_value={"employee_id": str(employee_id), "date_from": str(date_from), "date_to": str(date_to), "count": count}
+                )
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return count
 
     def reject_week(self, employee_id: UUID, date_from: date, date_to: date, reason: str | None = None) -> int:
@@ -652,16 +705,19 @@ class TimeEntryService:
             count += 1
             
         if count > 0:
-            self.db.commit()
-            
-            # Recompute hours for all touched tasks
-            task_ids = {entry.task_id for entry in entries}
-            for tid in task_ids:
-                self._recompute_task_actual_hours(tid)
-                
-            AuditService.log(
-                self.db, "time_entry", None, "BATCH_REJECT_WEEK",
-                performed_by=self.current_user_id,
-                new_value={"employee_id": str(employee_id), "date_from": str(date_from), "date_to": str(date_to), "count": count, "reason": reason}
-            )
+            try:
+                # Recompute hours for all touched tasks
+                task_ids = {entry.task_id for entry in entries}
+                for tid in task_ids:
+                    self._recompute_task_actual_hours(tid)
+
+                AuditService.log(
+                    self.db, "time_entry", None, "BATCH_REJECT_WEEK",
+                    performed_by=self.current_user_id,
+                    new_value={"employee_id": str(employee_id), "date_from": str(date_from), "date_to": str(date_to), "count": count, "reason": reason}
+                )
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return count

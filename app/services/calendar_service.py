@@ -316,7 +316,13 @@ class CalendarService:
             "task_adjustments": [],
         }
 
-        # Recalculate projects
+        from app.services.audit_service import AuditService
+        from app.services.project_metrics_service import ProjectMetricsService
+
+        # Recalculate projects — accumulate all changes, commit once at the end
+        # so the whole recalculation is atomic. Audit is logged before the
+        # single commit below.
+        adjusted_project_ids: list[uuid.UUID] = []
         for pid in project_ids:
             proj = db.get(Project, pid)
             if proj and proj.planned_end_date:
@@ -325,13 +331,10 @@ class CalendarService:
                 candidate = current_end + timedelta(days=direction)
                 while not WorkingDayEngine.is_working_day(candidate, db):
                     candidate += timedelta(days=direction)
-                
+
                 if candidate != current_end:
                     proj.planned_end_date = candidate
-                    db.commit()
-                    from app.services.project_metrics_service import ProjectMetricsService
-                    ProjectMetricsService.recalculate(db, pid)
-                    from app.services.audit_service import AuditService
+                    adjusted_project_ids.append(pid)
                     AuditService.log(
                         db, "project", pid, "AUTO_RECALC",
                         old_value={"planned_end_date": current_end.isoformat()},
@@ -343,7 +346,7 @@ class CalendarService:
                         "new_end": candidate.isoformat()
                     })
 
-        # Recalculate tasks
+        # Recalculate tasks — accumulate, commit once at the end.
         for tid in task_ids:
             task = db.get(Task, tid)
             if task and task.planned_end_date:
@@ -352,15 +355,27 @@ class CalendarService:
                 candidate = current_end + timedelta(days=direction)
                 while not WorkingDayEngine.is_working_day(candidate, db):
                     candidate += timedelta(days=direction)
-                
+
                 if candidate != current_end:
                     task.planned_end_date = candidate
-                    db.commit()
                     results["task_adjustments"].append({
                         "task_id": str(tid),
                         "old_end": current_end.isoformat(),
                         "new_end": candidate.isoformat()
                     })
+
+        # Single atomic commit for all project/task adjustments + their audits.
+        if results["project_adjustments"] or results["task_adjustments"]:
+            try:
+                db.flush()
+                # Metrics recalc must run before the commit so it is part of the
+                # same atomic transaction.
+                for pid in adjusted_project_ids:
+                    ProjectMetricsService.recalculate(db, pid)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
         if project_ids or task_ids:
             logger.info(
@@ -370,10 +385,21 @@ class CalendarService:
 
         return results
 
+    def _can_see_all(self) -> bool:
+        """True when the current user's data-access level is MANAGED or higher.
+
+        Mirrors the visibility gate used by _is_task_visible / _is_project_visible.
+        When there is no current user (system context) we do not restrict.
+        """
+        if not self.current_user_id:
+            return True
+        user_ctx = get_user_context(self.db, str(self.current_user_id))
+        return user_ctx.data_access_level >= DataAccessLevel.MANAGED
+
     def _get_leave_events(self, from_date: date, to_date: date) -> list[CalendarEventResponse]:
         from app.models.leave_request import LeaveRequest
         from sqlalchemy.orm import joinedload
-        leaves = self.db.scalars(
+        stmt = (
             select(LeaveRequest)
             .options(joinedload(LeaveRequest.employee))
             .where(
@@ -381,7 +407,11 @@ class CalendarService:
                 LeaveRequest.from_date <= to_date,
                 LeaveRequest.to_date >= from_date,
             )
-        ).all()
+        )
+        # Data-access scoping: below MANAGED, a user only sees their own leave.
+        if self.current_user_id and not self._can_see_all():
+            stmt = stmt.where(LeaveRequest.employee_id == self.current_user_id)
+        leaves = self.db.scalars(stmt).all()
         return [
             CalendarEventResponse(
                 id=f"leave-{l.id}",
@@ -412,6 +442,9 @@ class CalendarService:
                 TaskRisk.leave_end_date >= from_date,
             )
         ).all()
+        # Data-access scoping: only show risks on tasks the user can see.
+        if self.current_user_id:
+            risks = [r for r in risks if r.task and self._is_task_visible(r.task)]
         return [
             CalendarEventResponse(
                 id=f"risk-{r.id}",
@@ -441,6 +474,9 @@ class CalendarService:
                 TaskPauseHistory.is_active == True,
             )
         ).all()
+        # Data-access scoping: only show pauses on tasks the user can see.
+        if self.current_user_id:
+            pauses = [p for p in pauses if p.task and self._is_task_visible(p.task)]
         events = []
         for p in pauses:
             paused_d = p.paused_at.date()

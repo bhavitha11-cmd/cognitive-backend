@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # RBAC codes that are treated as super-admin for ownership bypass
 _SUPER_ADMIN_CODES = {"ADMIN", "CEO", "CHIEF_EXECUTIVE_OFFICER", "ADMINISTRATOR"}
 
+# Pagination bounds for list endpoints (H12: never allow an unbounded fetch)
+_DEFAULT_PAGE_LIMIT = 50
+_MAX_PAGE_LIMIT = 200
+
 
 class PendingScheduleReviewService:
     """Orchestrates the Emergency Holiday → Pending Schedule Review lifecycle.
@@ -159,36 +163,52 @@ class PendingScheduleReviewService:
 
             created.append((review, project_id, manager_id))
 
-        # Single commit AFTER the entire loop — all reviews committed atomically
-        self.db.commit()
+        # Audit every created review BEFORE the single commit so the audit trail
+        # is persisted in the same transaction as the reviews themselves.
+        try:
+            for review, project_id, manager_id in created:
+                AuditService.log(
+                    self.db,
+                    "pending_schedule_review",
+                    review.id,
+                    "REVIEW_CREATED",
+                    performed_by=self.current_user_id,
+                    new_value={
+                        "holiday_id": str(holiday_id),
+                        "project_id": str(project_id),
+                        "project_manager_id": str(manager_id) if manager_id else None,
+                    },
+                )
+
+            # Single commit AFTER the entire loop — all reviews committed atomically
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         result: list[PendingScheduleReviewResponse] = []
         for review, project_id, manager_id in created:
             self.db.refresh(review)
-            AuditService.log(
-                self.db,
-                "pending_schedule_review",
-                review.id,
-                "REVIEW_CREATED",
-                performed_by=self.current_user_id,
-                new_value={
-                    "holiday_id": str(holiday_id),
-                    "project_id": str(project_id),
-                    "project_manager_id": str(manager_id) if manager_id else None,
-                },
-            )
             result.append(self._build_response(review))
 
         return result
 
+    @staticmethod
+    def _cap_pagination(skip: int, limit: int) -> tuple[int, int]:
+        """Clamp pagination params so list endpoints can never be unbounded."""
+        skip = max(0, skip)
+        limit = max(1, min(limit, _MAX_PAGE_LIMIT))
+        return skip, limit
+
     def get_pending_for_manager(
-        self, manager_id: uuid.UUID
+        self, manager_id: uuid.UUID, skip: int = 0, limit: int = _DEFAULT_PAGE_LIMIT
     ) -> list[PendingScheduleReviewResponse]:
         """Return all PENDING reviews assigned to this project manager.
 
         Uses the ix_psr_manager_status composite index — O(rows owned by user),
         not O(all reviews).
         """
+        skip, limit = self._cap_pagination(skip, limit)
         reviews = self.db.scalars(
             select(PendingScheduleReview)
             .options(
@@ -201,27 +221,37 @@ class PendingScheduleReviewService:
                 PendingScheduleReview.review_status == "PENDING",
             )
             .order_by(PendingScheduleReview.created_at.desc())
+            .offset(skip)
+            .limit(limit)
         ).all()
         return [self._build_response(r) for r in reviews]
 
-    def get_all_pending(self) -> list[PendingScheduleReviewResponse]:
+    def get_all_pending(
+        self, skip: int = 0, limit: int = _DEFAULT_PAGE_LIMIT
+    ) -> list[PendingScheduleReviewResponse]:
         """Return all PENDING reviews regardless of owner (Admin use)."""
+        skip, limit = self._cap_pagination(skip, limit)
         reviews = self.db.scalars(
-            select(PendingScheduleReview).where(
-                PendingScheduleReview.review_status == "PENDING"
-            )
+            select(PendingScheduleReview)
+            .where(PendingScheduleReview.review_status == "PENDING")
+            .order_by(PendingScheduleReview.created_at.desc())
+            .offset(skip)
+            .limit(limit)
         ).all()
         return [self._build_response(r) for r in reviews]
 
     def get_all_for_manager(
-        self, manager_id: uuid.UUID
+        self, manager_id: uuid.UUID, skip: int = 0, limit: int = _DEFAULT_PAGE_LIMIT
     ) -> list[PendingScheduleReviewResponse]:
         """Return ALL reviews (any status) for a given manager — useful for
         history/audit views."""
+        skip, limit = self._cap_pagination(skip, limit)
         reviews = self.db.scalars(
-            select(PendingScheduleReview).where(
-                PendingScheduleReview.project_manager_id == manager_id,
-            )
+            select(PendingScheduleReview)
+            .where(PendingScheduleReview.project_manager_id == manager_id)
+            .order_by(PendingScheduleReview.created_at.desc())
+            .offset(skip)
+            .limit(limit)
         ).all()
         return [self._build_response(r) for r in reviews]
 
@@ -319,21 +349,26 @@ class PendingScheduleReviewService:
         review.review_status = "APPLIED"
         review.reviewed_by = requester_id
         review.reviewed_at = now
-        self.db.commit()
-        self.db.refresh(review)
 
-        AuditService.log(
-            self.db,
-            "pending_schedule_review",
-            review.id,
-            "REVIEW_APPLIED",
-            performed_by=requester_id,
-            new_value={
-                "review_id": str(review_id),
-                "applied_by": str(requester_id),
-                "applied_at": now.isoformat(),
-            },
-        )
+        try:
+            AuditService.log(
+                self.db,
+                "pending_schedule_review",
+                review.id,
+                "REVIEW_APPLIED",
+                performed_by=requester_id,
+                new_value={
+                    "review_id": str(review_id),
+                    "applied_by": str(requester_id),
+                    "applied_at": now.isoformat(),
+                },
+            )
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        self.db.refresh(review)
 
         return {
             "success": True,
@@ -364,22 +399,27 @@ class PendingScheduleReviewService:
         review.reviewed_by = requester_id
         review.reviewed_at = now
         review.notes = data.notes
-        self.db.commit()
-        self.db.refresh(review)
 
-        AuditService.log(
-            self.db,
-            "pending_schedule_review",
-            review.id,
-            "REVIEW_REJECTED",
-            performed_by=requester_id,
-            new_value={
-                "review_id": str(review_id),
-                "rejected_by": str(requester_id),
-                "rejected_at": now.isoformat(),
-                "notes": data.notes,
-            },
-        )
+        try:
+            AuditService.log(
+                self.db,
+                "pending_schedule_review",
+                review.id,
+                "REVIEW_REJECTED",
+                performed_by=requester_id,
+                new_value={
+                    "review_id": str(review_id),
+                    "rejected_by": str(requester_id),
+                    "rejected_at": now.isoformat(),
+                    "notes": data.notes,
+                },
+            )
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        self.db.refresh(review)
 
         return {
             "success": True,
@@ -409,19 +449,23 @@ class PendingScheduleReviewService:
             count += 1
 
         if count:
-            self.db.commit()
-            AuditService.log(
-                self.db,
-                "pending_schedule_review",
-                holiday_id,  # entity_id = the holiday for this batch event
-                "REVIEWS_CANCELLED",
-                performed_by=self.current_user_id,
-                new_value={
-                    "holiday_id": str(holiday_id),
-                    "cancelled_count": count,
-                    "reason": "Emergency Holiday deactivated",
-                },
-            )
+            try:
+                AuditService.log(
+                    self.db,
+                    "pending_schedule_review",
+                    holiday_id,  # entity_id = the holiday for this batch event
+                    "REVIEWS_CANCELLED",
+                    performed_by=self.current_user_id,
+                    new_value={
+                        "holiday_id": str(holiday_id),
+                        "cancelled_count": count,
+                        "reason": "Emergency Holiday deactivated",
+                    },
+                )
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
             logger.info(
                 "[PSR] Cancelled %d pending review(s) for holiday %s",
                 count,
@@ -433,27 +477,35 @@ class PendingScheduleReviewService:
     # ── Dashboard helpers ─────────────────────────────────────────────────────
 
     def get_widget_data_for_manager(
-        self, manager_id: uuid.UUID
+        self, manager_id: uuid.UUID, skip: int = 0, limit: int = _DEFAULT_PAGE_LIMIT
     ) -> list[PendingScheduleReviewWidget]:
         """Return the widget-shaped pending reviews for a project manager.
 
         Only returns PENDING reviews — resolved reviews are excluded from the
         widget (they still appear in audit logs and history queries).
         """
+        skip, limit = self._cap_pagination(skip, limit)
         reviews = self.db.scalars(
-            select(PendingScheduleReview).where(
+            select(PendingScheduleReview)
+            .where(
                 PendingScheduleReview.project_manager_id == manager_id,
                 PendingScheduleReview.review_status == "PENDING",
             )
+            .offset(skip)
+            .limit(limit)
         ).all()
         return self._to_widgets(reviews)
 
-    def get_widget_data_all(self) -> list[PendingScheduleReviewWidget]:
+    def get_widget_data_all(
+        self, skip: int = 0, limit: int = _DEFAULT_PAGE_LIMIT
+    ) -> list[PendingScheduleReviewWidget]:
         """Return widget-shaped PENDING reviews for all owners (Admin view)."""
+        skip, limit = self._cap_pagination(skip, limit)
         reviews = self.db.scalars(
-            select(PendingScheduleReview).where(
-                PendingScheduleReview.review_status == "PENDING"
-            )
+            select(PendingScheduleReview)
+            .where(PendingScheduleReview.review_status == "PENDING")
+            .offset(skip)
+            .limit(limit)
         ).all()
         return self._to_widgets(reviews)
 

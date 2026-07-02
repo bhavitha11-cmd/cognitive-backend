@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.attendance import Attendance
@@ -164,8 +165,14 @@ class WorkSessionService:
             self.db.flush()
 
         try:
-            self.db.flush()
-            self.db.commit()
+            # A partial unique index (unique RUNNING session) guards against
+            # concurrent duplicate active sessions; surface it as a clean 4xx.
+            try:
+                self.db.flush()
+            except IntegrityError:
+                self.db.rollback()
+                raise ValueError("You already have an active session")
+
             AuditService.log(
                 self.db,
                 "task_work_session",
@@ -178,6 +185,9 @@ class WorkSessionService:
                     "session_type": session_type,
                 },
             )
+            self.db.commit()
+        except ValueError:
+            raise
         except Exception:
             self.db.rollback()
             raise
@@ -211,7 +221,7 @@ class WorkSessionService:
         session.pause_reason = reason or session.pause_reason
 
         try:
-            self.db.commit()
+            self.db.flush()
             AuditService.log(
                 self.db,
                 "task_work_session",
@@ -223,6 +233,7 @@ class WorkSessionService:
                     "reason": reason,
                 },
             )
+            self.db.commit()
         except Exception:
             self.db.rollback()
             raise
@@ -264,7 +275,7 @@ class WorkSessionService:
         session.pause_reason = None
 
         try:
-            self.db.commit()
+            self.db.flush()
             AuditService.log(
                 self.db,
                 "task_work_session",
@@ -272,6 +283,7 @@ class WorkSessionService:
                 "RESUME",
                 performed_by=self.current_user_id,
             )
+            self.db.commit()
         except Exception:
             self.db.rollback()
             raise
@@ -320,17 +332,12 @@ class WorkSessionService:
                 task.progress = 1.0  # Numeric(5,4): 1.0 = 100%
                 self.db.flush()
 
-        # Generate a time entry from completed session
-        import logging
         try:
+            # Generate a time entry from the completed session as part of the
+            # same transaction — if this fails we must NOT commit a COMPLETED
+            # session with no corresponding time record (would corrupt hours).
             self._generate_time_entry_from_session(session)
-        except Exception as e:
-            logging.getLogger(__name__).error(
-                f"Failed to generate time entry for session {session.id}: {e}", exc_info=True
-            )
-
-        try:
-            self.db.commit()
+            self.db.flush()
             AuditService.log(
                 self.db,
                 "task_work_session",
@@ -343,6 +350,7 @@ class WorkSessionService:
                     "task_marked_complete": mark_task_complete,
                 },
             )
+            self.db.commit()
         except Exception:
             self.db.rollback()
             raise
@@ -376,7 +384,7 @@ class WorkSessionService:
         session.ended_by = self.current_user_id
 
         try:
-            self.db.commit()
+            self.db.flush()
             AuditService.log(
                 self.db,
                 "task_work_session",
@@ -384,6 +392,7 @@ class WorkSessionService:
                 "CANCEL",
                 performed_by=self.current_user_id,
             )
+            self.db.commit()
         except Exception:
             self.db.rollback()
             raise
@@ -618,36 +627,52 @@ class WorkSessionService:
         if not self.current_user_id:
             raise ValueError("Current user is not set")
 
-        session = self.db.scalar(
+        # Close both RUNNING and PAUSED sessions on clock-out.
+        sessions = self.db.scalars(
             select(TaskWorkSession).where(
                 TaskWorkSession.employee_id == self.current_user_id,
-                TaskWorkSession.status == "RUNNING",
+                TaskWorkSession.status.in_(["RUNNING", "PAUSED"]),
             )
-        )
-        if not session:
+        ).all()
+        if not sessions:
             return None
 
         now = datetime.now(timezone.utc)
-        diff = int((now - session.start_time).total_seconds() / 60.0)
-        session.duration_minutes += diff
-        session.end_time = now
-        session.status = "ABANDONED"
-        session.ended_by = self.current_user_id
-        session.pause_reason = "Auto-closed on clock-out"
+        closed_id: str | None = None
+        try:
+            for session in sessions:
+                # Only RUNNING sessions accrue additional time up to `now`;
+                # PAUSED sessions already had their time counted at pause.
+                if session.status == "RUNNING":
+                    start = session.start_time
+                    if start.tzinfo is None:
+                        start = start.replace(tzinfo=timezone.utc)
+                    diff = int((now - start).total_seconds() / 60.0)
+                    session.duration_minutes += max(0, diff)
+                session.end_time = now
+                session.status = "ABANDONED"
+                session.ended_by = self.current_user_id
+                session.pause_reason = "Auto-closed on clock-out"
 
-        AuditService.log(
-            self.db,
-            "task_work_session",
-            session.id,
-            "AUTO_CLOSE_CLOCK_OUT",
-            performed_by=self.current_user_id,
-            new_value={
-                "duration_minutes": session.duration_minutes,
-                "status": "ABANDONED",
-            },
-        )
+                AuditService.log(
+                    self.db,
+                    "task_work_session",
+                    session.id,
+                    "AUTO_CLOSE_CLOCK_OUT",
+                    performed_by=self.current_user_id,
+                    new_value={
+                        "duration_minutes": session.duration_minutes,
+                        "status": "ABANDONED",
+                    },
+                )
+                closed_id = str(session.id)
 
-        return str(session.id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return closed_id
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

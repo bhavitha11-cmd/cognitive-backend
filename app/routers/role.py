@@ -107,15 +107,28 @@ def set_role_permissions(
     id: uuid.UUID,
     body: RolePermissionList,
     db: Session = Depends(get_db),
+    current_user_id: str = Depends(get_current_user),
 ):
     role = db.get(Role, id)
     if not role:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
+    # M4: prevent a non-super-admin from rewriting permissions of a role they hold
+    # (second privilege-escalation channel alongside role assignment).
+    try:
+        actor_uuid = uuid.UUID(current_user_id)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user identity")
+    try:
+        RoleService(db).assert_can_edit_role_permissions(id, actor_uuid)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
     VALID_MODULES = {
-        "HR", "Projects", "Tasks", "Clients", "Timesheets", "Leave",
-        "Attendance", "Analytics", "Settings", "Calendar", "Dashboard",
-        "Holiday", "TaskTemplate", "CalendarSettings", "Productivity"
+        "HR", "Clients", "Finance", "Projects", "Inventory", "Settings",
+        "Reports", "Timesheets", "Tasks", "Attendance", "Leave", "Analytics",
+        "Holiday", "Calendar", "CompanyEvent", "Dashboard", "CalendarSettings",
+        "TaskTemplate", "Productivity"
     }
     for perm in body.permissions:
         if perm.module_name not in VALID_MODULES:

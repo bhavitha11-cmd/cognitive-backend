@@ -12,6 +12,7 @@ from app.schemas.employee import (
     TransferTeamRequest,
     TransferDepartmentRequest,
 )
+from app.schemas.offboarding import OffboardExecuteRequest
 
 from app.dependencies import get_current_user, require_permission, require_any_permission
 
@@ -24,6 +25,23 @@ router = APIRouter(
 
 class BulkIdsRequest(BaseModel):
     ids: list[str]
+
+
+# Phrases raised by the service that indicate a privilege-escalation attempt (C2).
+# These are mapped to 403 rather than the generic 400.
+_FORBIDDEN_MARKERS = (
+    "super-admin",
+    "assign roles to your own account",
+)
+
+
+def _error_status(e: Exception) -> int:
+    msg = str(e).lower()
+    if any(marker in msg for marker in _FORBIDDEN_MARKERS):
+        return status.HTTP_403_FORBIDDEN
+    if "not found" in msg:
+        return status.HTTP_404_NOT_FOUND
+    return status.HTTP_400_BAD_REQUEST
 
 
 def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(get_current_user)):
@@ -81,7 +99,7 @@ def create_employee(employee_in: EmployeeCreate, service=Depends(_get_service)):
     try:
         employee = service.create(employee_in)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=_error_status(e), detail=str(e))
     return APIResponse(
         success=True,
         message="Employee created successfully",
@@ -114,9 +132,7 @@ def update_employee(id: str, employee_in: EmployeeUpdate, service=Depends(_get_s
         resolved = service._resolve_id(id)
         employee = service.update(resolved, employee_in)
     except ValueError as e:
-        if "not found" in str(e):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=_error_status(e), detail=str(e))
     return APIResponse(
         success=True,
         message="Employee updated successfully",
@@ -225,6 +241,57 @@ def transfer_departments(
     return APIResponse(
         success=True,
         message=f"{len(body.department_ids)} department(s) head transferred",
+    )
+
+
+# ---- Enterprise Ownership Transfer ----
+
+
+@router.get(
+    "/{id}/offboard/impact",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("HR", "edit"))],
+)
+def offboard_impact(id: str, service=Depends(_get_service)):
+    """Full impact analysis before executing offboarding."""
+    from app.services.ownership_transfer_service import OwnershipTransferService
+    transfer_svc = OwnershipTransferService(service.db, current_user_id=service.current_user_id)
+    try:
+        resolved = service._resolve_id(id)
+        impact = transfer_svc.compute_impact(resolved)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Impact analysis complete",
+        data=impact.model_dump(),
+    )
+
+
+@router.post(
+    "/{id}/offboard/execute",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("HR", "delete"))],
+)
+def offboard_execute(id: str, body: OffboardExecuteRequest, service=Depends(_get_service)):
+    """Single atomic offboarding: transfers all ownership then sets employee inactive."""
+    from app.services.ownership_transfer_service import OwnershipTransferService
+    from sqlalchemy.exc import SQLAlchemyError
+    transfer_svc = OwnershipTransferService(service.db, current_user_id=service.current_user_id)
+    try:
+        resolved = service._resolve_id(id)
+        result = transfer_svc.execute_offboard(resolved, body)
+        service.db.commit()
+    except ValueError as e:
+        service.db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except SQLAlchemyError as e:
+        service.db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Offboard transaction failed; all changes rolled back.")
+    return APIResponse(
+        success=True,
+        message=f"Employee offboarded successfully with status '{result.final_status}'",
+        data=result.model_dump(),
     )
 
 

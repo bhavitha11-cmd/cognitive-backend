@@ -274,17 +274,31 @@ def get_daily_summary(
 # ── Get sessions for a task ───────────────────────────────────────────────────
 
 
-@router.get("/by-task/{task_id}", response_model=APIResponse)
+@router.get(
+    "/by-task/{task_id}",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Tasks", "view"))],
+)
 def get_task_sessions(
     task_id: uuid.UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     service: WorkSessionService = Depends(_get_service),
 ):
+    # H7: this endpoint returns every employee's sessions for the task, so it is
+    # gated by the same "Tasks"/"view" permission as the admin list endpoint
+    # rather than login alone.
     sessions = service.get_task_sessions(task_id)
+    total = len(sessions)
+    page = sessions[skip : skip + limit]  # H12: cap the response payload
     return APIResponse(
         success=True,
         message="Task sessions retrieved",
         data={
-            "work_sessions": [s.model_dump() for s in sessions],
+            "work_sessions": [s.model_dump() for s in page],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
         },
     )
 
@@ -335,13 +349,20 @@ def list_all_sessions(
 
 @router.get("/running", response_model=APIResponse)
 def get_running_sessions(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     service: WorkSessionService = Depends(_get_service),
 ):
     sessions = service.get_running_sessions()
+    total = len(sessions)
+    page = sessions[skip : skip + limit]  # H12: cap the response payload
     return APIResponse(
         success=True,
         message="Running sessions retrieved",
         data={
-            "running_sessions": [s.model_dump() for s in sessions],
+            "running_sessions": [s.model_dump() for s in page],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
         },
     )

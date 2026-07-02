@@ -167,7 +167,10 @@ def get_project_summary(
     db: Session = Depends(get_db),
     user_ctx: UserContext = Depends(require_data_access)
 ):
-    if user_ctx.data_access_level == DataAccessLevel.SELF:
+    # Security H8 (IDOR): enforce project membership for ALL non-FULL access
+    # levels (SELF, TEAM, MANAGED) so mid-tier users cannot read arbitrary
+    # projects by id. Only FULL (admin/CEO) bypasses the membership check.
+    if user_ctx.data_access_level != DataAccessLevel.FULL:
         from app.models.project_member import ProjectMember
         is_assigned = db.scalar(
             select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.employee_id == user_ctx.employee_id)
@@ -201,7 +204,9 @@ def get_project_charts(
     db: Session = Depends(get_db),
     user_ctx: UserContext = Depends(require_data_access)
 ):
-    if user_ctx.data_access_level == DataAccessLevel.SELF:
+    # Security H8 (IDOR): enforce project membership for ALL non-FULL access
+    # levels (SELF, TEAM, MANAGED). Only FULL (admin/CEO) bypasses the check.
+    if user_ctx.data_access_level != DataAccessLevel.FULL:
         from app.models.project_member import ProjectMember
         is_assigned = db.scalar(
             select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.employee_id == user_ctx.employee_id)
