@@ -75,10 +75,9 @@ def list_task_templates(
     )
 
 
-@router.get("/search", response_model=APIResponse,
-            dependencies=[Depends(require_permission("TaskTemplate", "view"))])
+@router.get("/search", response_model=APIResponse)
 def search_task_templates(
-    q: str | None = Query(None, min_length=2, max_length=200),
+    q: str | None = Query(None, max_length=200),
     limit: int = Query(default=20, le=100),
     service=Depends(_get_service),
 ):

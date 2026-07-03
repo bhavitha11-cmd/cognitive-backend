@@ -25,8 +25,7 @@ def _get_service(db: Session = Depends(get_db), current_user_id: str = Depends(g
     return TeamService(db, current_user_id=uid)
 
 
-@router.get("", response_model=APIResponse,
-            dependencies=[Depends(require_permission("HR", "view"))])
+@router.get("", response_model=APIResponse)
 def list_teams(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),

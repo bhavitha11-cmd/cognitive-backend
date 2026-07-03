@@ -99,7 +99,7 @@ class OwnershipTransferService:
                 select(TaskAssignment)
                 .where(
                     TaskAssignment.employee_id == employee_id,
-                    TaskAssignment.is_active == True,
+                    TaskAssignment.status.in_(["ASSIGNED", "IN_PROGRESS"]),
                 )
                 .options(joinedload(TaskAssignment.task))
             ).all()
@@ -383,7 +383,7 @@ class OwnershipTransferService:
                     select(TaskAssignment).where(
                         TaskAssignment.task_id == UUID(tr.task_id),
                         TaskAssignment.employee_id == employee_id,
-                        TaskAssignment.is_active == True,
+                        TaskAssignment.status.in_(["ASSIGNED", "IN_PROGRESS"]),
                     )
                 )
                 if ta:
@@ -394,7 +394,7 @@ class OwnershipTransferService:
                 remaining = self.db.scalars(
                     select(TaskAssignment).where(
                         TaskAssignment.employee_id == employee_id,
-                        TaskAssignment.is_active == True,
+                        TaskAssignment.status.in_(["ASSIGNED", "IN_PROGRESS"]),
                     )
                 ).all()
                 for ta in remaining:

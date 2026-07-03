@@ -30,8 +30,8 @@ class TaskCreate(BaseModel):
     @field_validator("department_category")
     @classmethod
     def validate_dept_cat(cls, v: str | None) -> str | None:
-        if v is not None and v not in VALID_DEPT_CATS:
-            raise ValueError(f"department_category must be one of {sorted(VALID_DEPT_CATS)}")
+        if v is not None and len(v) > 10:
+            raise ValueError("department_category must be at most 10 characters")
         return v
 
     @field_validator("status")
@@ -75,8 +75,8 @@ class TaskUpdate(BaseModel):
     @field_validator("department_category")
     @classmethod
     def validate_dept_cat(cls, v: str | None) -> str | None:
-        if v is not None and v not in VALID_DEPT_CATS:
-            raise ValueError(f"department_category must be one of {sorted(VALID_DEPT_CATS)}")
+        if v is not None and len(v) > 10:
+            raise ValueError("department_category must be at most 10 characters")
         return v
 
     @field_validator("status")

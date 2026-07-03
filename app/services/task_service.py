@@ -98,7 +98,7 @@ class TaskService:
             if scope and not dept_cat and hasattr(scope, "department_category"):
                 dept_cat = scope.department_category
 
-        if dept_cat:
+        if not team_id and dept_cat:
             from app.models.team import Team
             team = self.db.scalar(
                 select(Team).where(
@@ -235,9 +235,9 @@ class TaskService:
         has_assignee_field = "assigned_employee_id" in update_data
         assigned_employee_id = update_data.pop("assigned_employee_id", None)
 
-        # Resolve/Create team automatically if department_category is changed
+        # Resolve/Create team automatically if department_category is changed and team_id is not explicitly provided
         dept_cat = update_data.get("department_category")
-        if dept_cat:
+        if dept_cat and "team_id" not in update_data:
             from app.models.project import Project
             project = self.db.get(Project, task.project_id)
             if project:
