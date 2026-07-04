@@ -266,7 +266,7 @@ def submit_time_entry(
 @router.post(
     "/{id}/approve",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Timesheets", "approve"))],
+    dependencies=[Depends(require_permission("Timesheets", "edit"))],
 )
 def approve_time_entry(
     id: uuid.UUID,
@@ -299,7 +299,7 @@ def approve_time_entry(
 @router.post(
     "/{id}/reject",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Timesheets", "approve"))],
+    dependencies=[Depends(require_permission("Timesheets", "edit"))],
 )
 def reject_time_entry(
     id: uuid.UUID,
@@ -366,7 +366,7 @@ def submit_week(
 @router.post(
     "/approve-week",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Timesheets", "approve"))],
+    dependencies=[Depends(require_permission("Timesheets", "edit"))],
 )
 def approve_week(
     body: BatchApproveWeekRequest,
@@ -385,7 +385,7 @@ def approve_week(
 @router.post(
     "/reject-week",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Timesheets", "approve"))],
+    dependencies=[Depends(require_permission("Timesheets", "edit"))],
 )
 def reject_week(
     body: BatchRejectWeekRequest,

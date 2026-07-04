@@ -22,9 +22,7 @@ class PermissionDetail(BaseModel):
     can_view: bool
     can_create: bool
     can_edit: bool
-    can_delete: bool
-    can_approve: bool
-    can_export: bool
+    can_activate: bool
 
 
 class UserMeResponse(BaseModel):

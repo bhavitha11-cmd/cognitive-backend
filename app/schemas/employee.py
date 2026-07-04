@@ -168,6 +168,15 @@ class EmployeeUpdate(BaseModel):
 
 # ── response schemas ──────────────────────────────────────────────────────────
 
+class EmployeeLookupItem(BaseModel):
+    id: uuid.UUID
+    display_name: str
+    employee_code: str
+    department_id: uuid.UUID | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class EmployeeResponse(BaseModel):
     id: uuid.UUID
     employee_code: str

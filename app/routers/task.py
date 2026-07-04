@@ -254,7 +254,7 @@ def update_task(
 @router.delete(
     "/{id}",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Tasks", "delete"))],
+    dependencies=[Depends(require_permission("Tasks", "activate"))],
 )
 def delete_task(
     id: uuid.UUID,

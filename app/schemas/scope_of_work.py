@@ -39,6 +39,14 @@ class ScopeUpdate(BaseModel):
         return v
 
 
+class ScopeLookupItem(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ScopeResponse(BaseModel):
     id: uuid.UUID
     code: str

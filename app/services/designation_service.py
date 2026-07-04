@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 from app.models.designation import Designation
 from app.models.employee import Employee
 from app.repositories.designation_repository import DesignationRepository
-from app.schemas.designation import DesignationCreate, DesignationUpdate, DesignationResponse
+from app.schemas.designation import (
+    DesignationCreate,
+    DesignationLookupItem,
+    DesignationUpdate,
+    DesignationResponse,
+)
 from app.services.audit_service import AuditService
 
 
@@ -28,6 +33,15 @@ class DesignationService:
     def get_by_department(self, department_id: UUID) -> list[DesignationResponse]:
         designations = self.repo.get_by_department(department_id)
         return [DesignationResponse.model_validate(d) for d in designations]
+
+    def get_lookup(self) -> list[DesignationLookupItem]:
+        rows = self.repo.get_lookup()
+        return [
+            DesignationLookupItem(
+                id=r.id, name=r.name, code=r.code, department_id=r.department_id,
+            )
+            for r in rows
+        ]
 
     def create(self, data: DesignationCreate) -> DesignationResponse:
         if self.repo.db.scalars(
@@ -97,7 +111,8 @@ class DesignationService:
                 performed_by=self.current_user_id,
                 old_value={"name": designation.name, "code": designation.code},
             )
-            self.repo.delete(designation)
+            # Soft delete: deactivate instead of removing the row
+            self.repo.update(designation, {"is_active": False})
         except Exception:
             self.repo.db.rollback()
             raise

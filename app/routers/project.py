@@ -203,7 +203,7 @@ def update_project(id: uuid.UUID, project_in: ProjectUpdate, service=Depends(_ge
 @router.delete(
     "/{id}",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Projects", "delete"))],
+    dependencies=[Depends(require_permission("Projects", "activate"))],
 )
 def delete_project(id: uuid.UUID, service=Depends(_get_service)):
     try:

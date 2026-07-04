@@ -198,7 +198,7 @@ def update_holiday(
 @router.delete(
     "/{id}",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Holiday", "delete"))],
+    dependencies=[Depends(require_permission("Holiday", "activate"))],
 )
 def delete_holiday(
     id: uuid.UUID,
@@ -257,7 +257,7 @@ def get_emergency_holiday_impact(
 @router.post(
     "/emergency/{id}/apply",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Holiday", "approve"))],
+    dependencies=[Depends(require_permission("Holiday", "edit"))],
 )
 def apply_emergency_holiday(
     id: uuid.UUID,
@@ -277,7 +277,7 @@ def apply_emergency_holiday(
 @router.post(
     "/emergency/{id}/reject",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Holiday", "approve"))],
+    dependencies=[Depends(require_permission("Holiday", "edit"))],
 )
 def reject_emergency_holiday(
     id: uuid.UUID,

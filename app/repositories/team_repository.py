@@ -59,3 +59,12 @@ class TeamRepository(BaseRepository):
     def delete(self, team: Team) -> None:
         self.db.delete(team)
         self.db.commit()
+
+    def get_lookup(self, limit: int = 100) -> list:
+        stmt = (
+            select(Team.id, Team.team_name, Team.team_code, Team.department_id)
+            .where(Team.is_active == True)
+            .order_by(Team.team_name)
+            .limit(limit)
+        )
+        return list(self.db.execute(stmt).all())

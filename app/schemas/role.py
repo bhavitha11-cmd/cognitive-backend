@@ -13,7 +13,7 @@ VALID_MODULES = {
 
 VALID_ACCESS_LEVELS = {"FULL", "MANAGED", "TEAM", "SELF"}
 
-PERMISSION_ACTIONS = ["can_view", "can_create", "can_edit", "can_delete", "can_approve", "can_export"]
+PERMISSION_ACTIONS = ["can_view", "can_create", "can_edit", "can_activate"]
 
 
 class RoleBase(BaseModel):
@@ -55,9 +55,7 @@ class RolePermissionItem(BaseModel):
     can_view: bool = False
     can_create: bool = False
     can_edit: bool = False
-    can_delete: bool = False
-    can_approve: bool = False
-    can_export: bool = False
+    can_activate: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -94,8 +92,6 @@ class RolePermissionResponse(BaseModel):
     can_view: bool
     can_create: bool
     can_edit: bool
-    can_delete: bool
-    can_approve: bool
-    can_export: bool
+    can_activate: bool
 
     model_config = ConfigDict(from_attributes=True)

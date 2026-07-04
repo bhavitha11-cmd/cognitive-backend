@@ -140,7 +140,7 @@ def update_task_template(
 
 
 @router.delete("/{id}", response_model=APIResponse,
-               dependencies=[Depends(require_permission("TaskTemplate", "delete"))])
+               dependencies=[Depends(require_permission("TaskTemplate", "activate"))])
 def delete_task_template(id: uuid.UUID, service=Depends(_get_service)):
     try:
         service.delete(id)

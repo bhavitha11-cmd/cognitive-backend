@@ -8,7 +8,7 @@ from app.models.team import Team
 from app.models.employee import Employee
 from app.repositories.team_repository import TeamRepository
 from app.repositories.team_member_repository import TeamMemberRepository
-from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse
+from app.schemas.team import TeamCreate, TeamLookupItem, TeamUpdate, TeamResponse
 from app.schemas.team_member import TeamMemberCreate, TeamMemberUpdate, TeamMemberResponse
 from app.services.audit_service import AuditService
 
@@ -72,6 +72,16 @@ class TeamService:
             team_lead_name=lead_name,
             team_lead_id=lead.employee_id if lead else None,
         )
+
+    def get_lookup(self) -> list[TeamLookupItem]:
+        rows = self.repo.get_lookup()
+        return [
+            TeamLookupItem(
+                id=r.id, team_name=r.team_name, team_code=r.team_code,
+                department_id=r.department_id,
+            )
+            for r in rows
+        ]
 
     def create(self, data: TeamCreate) -> Team:
         if self.repo.get_by_name(data.team_name):

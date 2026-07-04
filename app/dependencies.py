@@ -69,7 +69,7 @@ def get_current_user(
 def require_permission(module: str, action: str):
     """
     Return a FastAPI dependency that enforces RBAC.
-    action must be one of: view, create, edit, delete, approve, export
+    action must be one of: view, create, edit, activate
     """
     def _check_role_super_admin(db: Session, user_uuid: UUID) -> bool:
         """Direct query to check if user has a super-admin role code."""
@@ -128,7 +128,7 @@ def require_permission(module: str, action: str):
         # Module-level permission check
         action_field = f"can_{action}"
         for er in employee.employee_roles:
-            if not er.is_active or not er.role:
+            if not er.is_active or not er.role or not er.role.is_active:
                 continue
             for perm in er.role.permissions:
                 if perm.module_name == module and getattr(perm, action_field, False):
@@ -202,7 +202,7 @@ def require_any_permission(*permission_specs: tuple[str, str]):
 
         # Check all role permissions against all specs
         for er in employee.employee_roles:
-            if not er.is_active or not er.role:
+            if not er.is_active or not er.role or not er.role.is_active:
                 continue
             for perm in er.role.permissions:
                 for module, action in permission_specs:

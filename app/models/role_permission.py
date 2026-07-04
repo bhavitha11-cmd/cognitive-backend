@@ -39,13 +39,7 @@ class RolePermission(Base):
     can_edit: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
-    can_delete: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    can_approve: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    can_export: Mapped[bool] = mapped_column(
+    can_activate: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
 

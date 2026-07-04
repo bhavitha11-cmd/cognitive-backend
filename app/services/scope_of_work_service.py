@@ -4,7 +4,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.scope_of_work import ScopeOfWork
-from app.schemas.scope_of_work import ScopeCreate, ScopeResponse, ScopeUpdate
+from app.schemas.scope_of_work import (
+    ScopeCreate,
+    ScopeLookupItem,
+    ScopeResponse,
+    ScopeUpdate,
+)
 from app.services.audit_service import AuditService
 
 
@@ -44,6 +49,16 @@ class ScopeService:
     def get_by_id(self, id: UUID) -> ScopeResponse:
         scope = self._get_or_404(id)
         return ScopeResponse.model_validate(scope)
+
+    def get_lookup(self, limit: int = 100) -> list[ScopeLookupItem]:
+        stmt = (
+            select(ScopeOfWork.id, ScopeOfWork.code, ScopeOfWork.name)
+            .where(ScopeOfWork.is_active == True)
+            .order_by(ScopeOfWork.name)
+            .limit(limit)
+        )
+        rows = self.db.execute(stmt).all()
+        return [ScopeLookupItem(id=r.id, code=r.code, name=r.name) for r in rows]
 
     def create(self, data: ScopeCreate) -> ScopeResponse:
         # Check code uniqueness

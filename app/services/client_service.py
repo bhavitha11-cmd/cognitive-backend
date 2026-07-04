@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models.client import Client
 from app.repositories.client_repository import ClientRepository
-from app.schemas.client import ClientCreate, ClientResponse, ClientUpdate
+from app.schemas.client import ClientCreate, ClientLookupItem, ClientResponse, ClientUpdate
 from app.services.audit_service import AuditService
 
 
@@ -36,6 +36,13 @@ class ClientService:
         if not client:
             raise ValueError(f"Client with id {id} not found")
         return self._to_response(client)
+
+    def get_lookup(self) -> list[ClientLookupItem]:
+        rows = self.repo.get_lookup()
+        return [
+            ClientLookupItem(id=r.id, name=r.name, client_code=r.client_code)
+            for r in rows
+        ]
 
     def create(self, data: ClientCreate) -> ClientResponse:
         client_code = data.client_code.strip() if data.client_code else ""

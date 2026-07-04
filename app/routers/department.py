@@ -52,6 +52,16 @@ def create_department(department_in: DepartmentCreate, service=Depends(_get_serv
     )
 
 
+@router.get("/lookup", response_model=APIResponse)
+def lookup_departments(service=Depends(_get_service)):
+    departments = service.get_lookup()
+    return APIResponse(
+        success=True,
+        message="Departments lookup retrieved successfully",
+        data={"departments": [d.model_dump() for d in departments]},
+    )
+
+
 @router.get("/{id}", response_model=APIResponse)
 def get_department(id: uuid.UUID, service=Depends(_get_service)):
     try:
@@ -81,7 +91,7 @@ def update_department(id: uuid.UUID, department_in: DepartmentUpdate, service=De
 
 
 @router.delete("/{id}", response_model=APIResponse,
-               dependencies=[Depends(require_permission("HR", "delete"))])
+               dependencies=[Depends(require_permission("HR", "activate"))])
 def delete_department(id: uuid.UUID, service=Depends(_get_service)):
     try:
         service.delete(id)

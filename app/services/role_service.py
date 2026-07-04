@@ -185,13 +185,9 @@ class RoleService:
         )
         if assigned:
             raise ValueError("Cannot delete role that is assigned to employees")
-        # Re-parent children
-        for child in db_role.child_roles:
-            child.parent_role_id = db_role.parent_role_id
-            child.hierarchy_level = db_role.hierarchy_level or 1
-            self.db.add(child)
-            update_child_hierarchies(self.db, child)
-        self.db.delete(db_role)
+        # Soft delete: deactivate instead of removing the row
+        db_role.is_active = False
+        self.db.add(db_role)
         try:
             self.db.flush()
             AuditService.log(self.db, "role", id, "DELETE")

@@ -66,6 +66,16 @@ def create_scope(scope_in: ScopeCreate, service=Depends(_get_service)):
     )
 
 
+@router.get("/lookup", response_model=APIResponse)
+def lookup_scopes(service=Depends(_get_service)):
+    scopes = service.get_lookup()
+    return APIResponse(
+        success=True,
+        message="Scope of work lookup retrieved successfully",
+        data={"scopes": [s.model_dump() for s in scopes]},
+    )
+
+
 @router.get("/{id}", response_model=APIResponse,
             dependencies=[Depends(require_permission("Settings", "view"))])
 def get_scope(id: uuid.UUID, service=Depends(_get_service)):
@@ -107,7 +117,7 @@ def update_scope(id: uuid.UUID, scope_in: ScopeUpdate, service=Depends(_get_serv
 @router.delete(
     "/{id}",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Settings", "delete"))],
+    dependencies=[Depends(require_permission("Settings", "activate"))],
 )
 def delete_scope(id: uuid.UUID, service=Depends(_get_service)):
     try:

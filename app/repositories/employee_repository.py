@@ -84,6 +84,18 @@ class EmployeeRepository(BaseRepository):
         self.db.delete(employee)
         self.db.commit()
 
+    def get_lookup(self, limit: int = 200) -> list:
+        stmt = (
+            select(
+                Employee.id, Employee.display_name, Employee.first_name,
+                Employee.last_name, Employee.employee_code, Employee.department_id,
+            )
+            .where(Employee.is_active == True)
+            .order_by(Employee.first_name, Employee.last_name)
+            .limit(limit)
+        )
+        return list(self.db.execute(stmt).all())
+
     def get_employee_roles(self, employee_id: UUID) -> list[EmployeeRole]:
         return list(
             self.db.scalars(

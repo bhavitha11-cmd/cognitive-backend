@@ -69,6 +69,16 @@ def create_client(client_in: ClientCreate, service=Depends(_get_service)):
     )
 
 
+@router.get("/lookup", response_model=APIResponse)
+def lookup_clients(service=Depends(_get_service)):
+    clients = service.get_lookup()
+    return APIResponse(
+        success=True,
+        message="Clients lookup retrieved successfully",
+        data={"clients": [c.model_dump() for c in clients]},
+    )
+
+
 @router.get("/{id}", response_model=APIResponse,
             dependencies=[Depends(require_permission("Clients", "view"))])
 def get_client(id: uuid.UUID, service=Depends(_get_service)):
@@ -104,7 +114,7 @@ def update_client(id: uuid.UUID, client_in: ClientUpdate, service=Depends(_get_s
 @router.delete(
     "/{id}",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Clients", "delete"))],
+    dependencies=[Depends(require_permission("Clients", "activate"))],
 )
 def delete_client(id: uuid.UUID, service=Depends(_get_service)):
     try:

@@ -82,3 +82,12 @@ class ClientRepository(BaseRepository):
     def delete(self, client: Client) -> None:
         self.db.delete(client)
         self.db.commit()
+
+    def get_lookup(self, limit: int = 100) -> list:
+        stmt = (
+            select(Client.id, Client.name, Client.client_code)
+            .where(Client.is_active == True)
+            .order_by(Client.name)
+            .limit(limit)
+        )
+        return list(self.db.execute(stmt).all())

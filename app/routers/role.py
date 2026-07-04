@@ -73,7 +73,7 @@ def update_role(id: uuid.UUID, role_in: RoleUpdate, service: RoleService = Depen
 
 
 @router.delete("/{id}", response_model=APIResponse,
-               dependencies=[Depends(require_permission("Settings", "delete"))])
+               dependencies=[Depends(require_permission("Settings", "activate"))])
 def delete_role(id: uuid.UUID, service: RoleService = Depends(_get_service)):
     try:
         service.delete(id)
@@ -146,9 +146,7 @@ def set_role_permissions(
             entry.can_view = perm.can_view
             entry.can_create = perm.can_create
             entry.can_edit = perm.can_edit
-            entry.can_delete = perm.can_delete
-            entry.can_approve = perm.can_approve
-            entry.can_export = perm.can_export
+            entry.can_activate = perm.can_activate
         else:
             db.add(RolePermission(
                 role_id=id,
@@ -156,9 +154,7 @@ def set_role_permissions(
                 can_view=perm.can_view,
                 can_create=perm.can_create,
                 can_edit=perm.can_edit,
-                can_delete=perm.can_delete,
-                can_approve=perm.can_approve,
-                can_export=perm.can_export,
+                can_activate=perm.can_activate,
             ))
 
     # Remove any existing permissions not in the incoming list

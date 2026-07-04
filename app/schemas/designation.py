@@ -21,6 +21,15 @@ class DesignationUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class DesignationLookupItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    code: str
+    department_id: uuid.UUID | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DesignationResponse(BaseModel):
     id: uuid.UUID
     department_id: uuid.UUID

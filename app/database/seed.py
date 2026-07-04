@@ -315,9 +315,7 @@ def seed_task_template_permissions(db: Session):
             can_view=True,
             can_create=True,
             can_edit=True,
-            can_delete=True,
-            can_approve=False,
-            can_export=False,
+            can_activate=True,
         )
         db.add(perm)
         db.commit()
@@ -382,11 +380,11 @@ def seed_calendar_permissions(db: Session):
     from app.models.role import Role
 
     PERMISSIONS = [
-        ("Holiday", True, True, True, True, False, False),
-        ("Calendar", True, False, False, False, False, False),
-        ("CompanyEvent", True, True, True, True, False, False),
-        ("Dashboard", True, False, False, False, False, False),
-        ("CalendarSettings", True, True, True, True, False, False),
+        ("Holiday", True, True, True, True),
+        ("Calendar", True, False, False, False),
+        ("CompanyEvent", True, True, True, True),
+        ("Dashboard", True, False, False, False),
+        ("CalendarSettings", True, True, True, True),
     ]
 
     created = 0
@@ -396,7 +394,7 @@ def seed_calendar_permissions(db: Session):
             logger.warning(f"[Seed] Role {role_code} not found, skipping calendar permissions.")
             continue
 
-        for module, can_view, can_create, can_edit, can_delete, can_approve, can_export in PERMISSIONS:
+        for module, can_view, can_create, can_edit, can_activate in PERMISSIONS:
             existing = db.scalar(
                 select(RolePermission).where(
                     RolePermission.role_id == role.id,
@@ -411,9 +409,7 @@ def seed_calendar_permissions(db: Session):
                     can_view=can_view,
                     can_create=can_create,
                     can_edit=can_edit,
-                    can_delete=can_delete,
-                    can_approve=can_approve,
-                    can_export=can_export,
+                    can_activate=can_activate,
                 )
                 db.add(perm)
                 created += 1

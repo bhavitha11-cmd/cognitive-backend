@@ -101,7 +101,7 @@ def get_user_context(db: Session, user_id: str) -> UserContext:
     highest_level = DataAccessLevel.SELF
 
     for er in employee.employee_roles:
-        if not er.is_active or not er.role:
+        if not er.is_active or not er.role or not er.role.is_active:
             continue
 
         role_codes.append(er.role.role_code)

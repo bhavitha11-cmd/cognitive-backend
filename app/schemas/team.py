@@ -18,6 +18,15 @@ class TeamUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class TeamLookupItem(BaseModel):
+    id: uuid.UUID
+    team_name: str
+    team_code: str
+    department_id: uuid.UUID | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TeamResponse(BaseModel):
     id: uuid.UUID
     team_name: str

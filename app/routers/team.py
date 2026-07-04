@@ -56,6 +56,16 @@ def create_team(data: TeamCreate, service: TeamService = Depends(_get_service)):
     )
 
 
+@router.get("/lookup", response_model=APIResponse)
+def lookup_teams(service: TeamService = Depends(_get_service)):
+    teams = service.get_lookup()
+    return APIResponse(
+        success=True,
+        message="Teams lookup retrieved successfully",
+        data={"teams": [t.model_dump() for t in teams]},
+    )
+
+
 @router.get("/{id}", response_model=APIResponse,
             dependencies=[Depends(require_permission("HR", "view"))])
 def get_team(id: uuid.UUID, service: TeamService = Depends(_get_service)):
@@ -85,7 +95,7 @@ def update_team(id: uuid.UUID, data: TeamUpdate, service: TeamService = Depends(
 
 
 @router.delete("/{id}", response_model=APIResponse,
-               dependencies=[Depends(require_permission("HR", "delete"))])
+               dependencies=[Depends(require_permission("HR", "activate"))])
 def deactivate_team(id: uuid.UUID, service: TeamService = Depends(_get_service)):
     try:
         service.deactivate(id)

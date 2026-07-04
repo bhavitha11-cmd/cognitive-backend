@@ -107,6 +107,16 @@ def create_employee(employee_in: EmployeeCreate, service=Depends(_get_service)):
     )
 
 
+@router.get("/lookup", response_model=APIResponse)
+def lookup_employees(service=Depends(_get_service)):
+    employees = service.get_lookup()
+    return APIResponse(
+        success=True,
+        message="Employees lookup retrieved successfully",
+        data={"employees": [e.model_dump() for e in employees]},
+    )
+
+
 @router.get(
     "/{id}",
     response_model=APIResponse,
@@ -141,7 +151,7 @@ def update_employee(id: str, employee_in: EmployeeUpdate, service=Depends(_get_s
 
 
 @router.delete("/{id}", response_model=APIResponse,
-               dependencies=[Depends(require_permission("HR", "delete"))])
+               dependencies=[Depends(require_permission("HR", "activate"))])
 def delete_employee(id: str, service=Depends(_get_service)):
     try:
         resolved = service._resolve_id(id)
@@ -171,7 +181,7 @@ def offboard_check(id: str, service=Depends(_get_service)):
 
 
 @router.post("/{id}/offboard/confirm", response_model=APIResponse,
-             dependencies=[Depends(require_permission("HR", "delete"))])
+             dependencies=[Depends(require_permission("HR", "activate"))])
 def offboard_confirm(
     id: str,
     final_status: str = Query("RESIGNED", description="Final status", enum=["RESIGNED", "TERMINATED"]),
@@ -271,7 +281,7 @@ def offboard_impact(id: str, service=Depends(_get_service)):
 @router.post(
     "/{id}/offboard/execute",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("HR", "delete"))],
+    dependencies=[Depends(require_permission("HR", "activate"))],
 )
 def offboard_execute(id: str, body: OffboardExecuteRequest, service=Depends(_get_service)):
     """Single atomic offboarding: transfers all ownership then sets employee inactive."""
@@ -352,7 +362,7 @@ def get_direct_reports(id: str, service=Depends(_get_service)):
 
 
 @router.patch("/{id}/deactivate", response_model=APIResponse,
-              dependencies=[Depends(require_permission("HR", "delete"))])
+              dependencies=[Depends(require_permission("HR", "activate"))])
 def deactivate_employee(id: str, service=Depends(_get_service)):
     try:
         resolved = service._resolve_id(id)
@@ -369,7 +379,7 @@ def deactivate_employee(id: str, service=Depends(_get_service)):
 
 
 @router.post("/bulk-deactivate", response_model=APIResponse,
-             dependencies=[Depends(require_permission("HR", "delete"))])
+             dependencies=[Depends(require_permission("HR", "activate"))])
 def bulk_deactivate_employees(body: BulkIdsRequest, service=Depends(_get_service)):
     try:
         service.bulk_deactivate(body.ids)
@@ -379,7 +389,7 @@ def bulk_deactivate_employees(body: BulkIdsRequest, service=Depends(_get_service
 
 
 @router.post("/bulk-delete", response_model=APIResponse,
-             dependencies=[Depends(require_permission("HR", "delete"))])
+             dependencies=[Depends(require_permission("HR", "activate"))])
 def bulk_delete_employees(body: BulkIdsRequest, service=Depends(_get_service)):
     try:
         service.bulk_delete(body.ids)

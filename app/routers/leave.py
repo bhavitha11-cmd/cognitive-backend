@@ -102,7 +102,7 @@ def update_leave_type(
 @router.delete(
     "/types/{id}",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Leave", "delete"))],
+    dependencies=[Depends(require_permission("Leave", "activate"))],
 )
 def delete_leave_type(
     id: uuid.UUID,
@@ -366,7 +366,7 @@ def cancel_leave_request(
 @router.post(
     "/requests/{id}/approve",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("Leave", "approve"))],
+    dependencies=[Depends(require_permission("Leave", "edit"))],
 )
 def approve_or_reject_leave(
     id: uuid.UUID,

@@ -35,3 +35,12 @@ class DepartmentRepository(BaseRepository):
     def delete(self, department: Department) -> None:
         self.db.delete(department)
         self.db.commit()
+
+    def get_lookup(self, limit: int = 100) -> list:
+        stmt = (
+            select(Department.id, Department.name, Department.code)
+            .where(Department.is_active == True)
+            .order_by(Department.name)
+            .limit(limit)
+        )
+        return list(self.db.execute(stmt).all())

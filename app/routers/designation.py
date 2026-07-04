@@ -62,6 +62,16 @@ def create_designation(designation_in: DesignationCreate, service=Depends(_get_s
     )
 
 
+@router.get("/lookup", response_model=APIResponse)
+def lookup_designations(service=Depends(_get_service)):
+    designations = service.get_lookup()
+    return APIResponse(
+        success=True,
+        message="Designations lookup retrieved successfully",
+        data={"designations": [d.model_dump() for d in designations]},
+    )
+
+
 @router.get("/{id}", response_model=APIResponse)
 def get_designation(id: uuid.UUID, service=Depends(_get_service)):
     try:
@@ -91,7 +101,7 @@ def update_designation(id: uuid.UUID, designation_in: DesignationUpdate, service
 
 
 @router.delete("/{id}", response_model=APIResponse,
-               dependencies=[Depends(require_permission("HR", "delete"))])
+               dependencies=[Depends(require_permission("HR", "activate"))])
 def delete_designation(id: uuid.UUID, service=Depends(_get_service)):
     try:
         service.delete(id)

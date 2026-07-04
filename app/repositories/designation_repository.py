@@ -42,3 +42,15 @@ class DesignationRepository(BaseRepository):
     def delete(self, designation: Designation) -> None:
         self.db.delete(designation)
         self.db.commit()
+
+    def get_lookup(self, limit: int = 100) -> list:
+        stmt = (
+            select(
+                Designation.id, Designation.name, Designation.code,
+                Designation.department_id,
+            )
+            .where(Designation.is_active == True)
+            .order_by(Designation.name)
+            .limit(limit)
+        )
+        return list(self.db.execute(stmt).all())

@@ -42,6 +42,14 @@ class ClientUpdate(BaseModel):
     deactivation_reason: str | None = Field(None, max_length=1000)
 
 
+class ClientLookupItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    client_code: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ClientResponse(BaseModel):
     id: uuid.UUID
     client_code: str

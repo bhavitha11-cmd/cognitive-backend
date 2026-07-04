@@ -19,6 +19,14 @@ class DepartmentUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class DepartmentLookupItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    code: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DepartmentResponse(BaseModel):
     id: uuid.UUID
     name: str

@@ -60,15 +60,14 @@ def _load_employee_with_roles(db: Session, user_uuid: UUID) -> Employee | None:
 def _build_permissions(employee: Employee) -> tuple[list[str], list[str], dict]:
     roles, role_codes, permissions_map = [], [], {}
     for er in employee.employee_roles:
-        if er.is_active and er.role:
+        if er.is_active and er.role and er.role.is_active:
             roles.append(er.role.name)
             role_codes.append(er.role.role_code)
             for p in er.role.permissions:
                 mod = p.module_name
                 if mod not in permissions_map:
                     permissions_map[mod] = {k: False for k in
-                                            ("can_view", "can_create", "can_edit",
-                                             "can_delete", "can_approve", "can_export")}
+                                            ("can_view", "can_create", "can_edit", "can_activate")}
                 for action in permissions_map[mod]:
                     permissions_map[mod][action] |= getattr(p, action)
     return roles, role_codes, permissions_map
@@ -342,8 +341,7 @@ def get_me(
         for mod in ["HR", "Clients", "Finance", "Projects",
                     "Inventory", "Settings", "Reports", "Timesheets", "Tasks"]:
             permissions_map[mod] = {k: True for k in
-                                    ("can_view", "can_create", "can_edit",
-                                     "can_delete", "can_approve", "can_export")}
+                                    ("can_view", "can_create", "can_edit", "can_activate")}
 
     permissions_list = [
         PermissionDetail(module_name=mod, **perms)

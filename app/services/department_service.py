@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 from app.models.department import Department
 from app.models.employee import Employee
 from app.repositories.department_repository import DepartmentRepository
-from app.schemas.department import DepartmentCreate, DepartmentUpdate, DepartmentResponse
+from app.schemas.department import (
+    DepartmentCreate,
+    DepartmentLookupItem,
+    DepartmentUpdate,
+    DepartmentResponse,
+)
 from app.services.audit_service import AuditService
 
 
@@ -24,6 +29,13 @@ class DepartmentService:
         if not department:
             raise ValueError(f"Department with id {id} not found")
         return DepartmentResponse.model_validate(department)
+
+    def get_lookup(self) -> list[DepartmentLookupItem]:
+        rows = self.repo.get_lookup()
+        return [
+            DepartmentLookupItem(id=r.id, name=r.name, code=r.code)
+            for r in rows
+        ]
 
     def create(self, data: DepartmentCreate) -> DepartmentResponse:
         # Case-insensitive name uniqueness
@@ -113,7 +125,8 @@ class DepartmentService:
                 performed_by=self.current_user_id,
                 old_value={"name": department.name, "code": department.code},
             )
-            self.repo.delete(department)
+            # Soft delete: deactivate instead of removing the row
+            self.repo.update(department, {"is_active": False})
         except Exception:
             self.repo.db.rollback()
             raise

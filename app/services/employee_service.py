@@ -17,6 +17,7 @@ from app.schemas.employee import (
     EmployeeUpdate,
     EmployeeResponse,
     EmployeeListResponse,
+    EmployeeLookupItem,
     EmployeeOffboardCheck,
     EmployeeOffboardBlocker,
 )
@@ -190,6 +191,19 @@ class EmployeeService:
         if not employee:
             raise ValueError(f"Employee with id {id} not found")
         return self._build_list_response(employee)
+
+    def get_lookup(self) -> list[EmployeeLookupItem]:
+        rows = self.repo.get_lookup()
+        result = []
+        for r in rows:
+            display_name = r.display_name or f"{r.first_name} {r.last_name}".strip()
+            result.append(EmployeeLookupItem(
+                id=r.id,
+                display_name=display_name,
+                employee_code=r.employee_code,
+                department_id=r.department_id,
+            ))
+        return result
 
     def create(self, data: EmployeeCreate) -> EmployeeResponse:
         if self.repo.get_by_email(data.email):

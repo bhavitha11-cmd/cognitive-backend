@@ -376,7 +376,7 @@ def get_performance_rankings(
 
 @router.get(
     "/performance/export",
-    dependencies=[Depends(require_any_permission(("HR", "export"), ("HR", "view")))]
+    dependencies=[Depends(require_permission("HR", "view"))]
 )
 def export_performance_rankings(
     department_id: UUID | None = Query(None),

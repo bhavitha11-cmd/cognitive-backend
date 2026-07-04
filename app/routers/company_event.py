@@ -111,7 +111,7 @@ def update_company_event(id: uuid.UUID, data: CompanyEventUpdate, service=Depend
 @router.delete(
     "/{id}",
     response_model=APIResponse,
-    dependencies=[Depends(require_permission("CompanyEvent", "delete"))],
+    dependencies=[Depends(require_permission("CompanyEvent", "activate"))],
 )
 def delete_company_event(id: uuid.UUID, service=Depends(_get_service)):
     try:
