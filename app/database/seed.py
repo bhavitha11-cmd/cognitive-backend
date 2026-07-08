@@ -295,27 +295,36 @@ def seed_calendar_settings(db: Session):
 def seed_task_template_permissions(db: Session):
     from app.models.role_permission import RolePermission
     from app.models.role import Role
+    from app.models.feature import Feature
+    from app.core.permission_scope import PermissionScope
 
     admin_role = db.scalar(select(Role).where(Role.role_code == "ADMIN"))
     if not admin_role:
         logger.warning("[Seed] ADMIN role not found, skipping task template permissions.")
         return
 
+    # Map TaskTemplate module to task_title_library feature
+    feature = db.scalar(select(Feature).where(Feature.feature_key == "task_title_library"))
+    if not feature:
+        logger.warning("[Seed] Feature 'task_title_library' not found, skipping task template permissions.")
+        return
+
     existing = db.scalar(
         select(RolePermission).where(
             RolePermission.role_id == admin_role.id,
-            RolePermission.module_name == "TaskTemplate",
+            RolePermission.feature_id == feature.id,
         )
     )
     if not existing:
         perm = RolePermission(
             id=uuid.uuid4(),
             role_id=admin_role.id,
+            feature_id=feature.id,
             module_name="TaskTemplate",
-            can_view=True,
-            can_create=True,
-            can_edit=True,
-            can_activate=True,
+            view_scope=PermissionScope.ALL.value,
+            create_scope=PermissionScope.ALL.value,
+            update_scope=PermissionScope.ALL.value,
+            delete_scope=PermissionScope.ALL.value,
         )
         db.add(perm)
         db.commit()
@@ -378,13 +387,15 @@ def seed_task_template_permissions(db: Session):
 def seed_calendar_permissions(db: Session):
     from app.models.role_permission import RolePermission
     from app.models.role import Role
+    from app.models.feature import Feature
+    from app.core.permission_scope import PermissionScope
 
-    PERMISSIONS = [
-        ("Holiday", True, True, True, True),
-        ("Calendar", True, False, False, False),
-        ("CompanyEvent", True, True, True, True),
-        ("Dashboard", True, False, False, False),
-        ("CalendarSettings", True, True, True, True),
+    # Define feature keys and their corresponding scopes
+    # Format: (feature_key, legacy_module_name, view, create, update, delete)
+    FEATURE_PERMISSIONS = [
+        ("calendar", "Calendar", PermissionScope.ALL.value, PermissionScope.ALL.value, PermissionScope.ALL.value, PermissionScope.ALL.value),
+        ("calendar_configuration", "CalendarSettings", PermissionScope.ALL.value, PermissionScope.ALL.value, PermissionScope.ALL.value, PermissionScope.ALL.value),
+        ("my_dashboard", "Dashboard", PermissionScope.ALL.value, PermissionScope.NONE.value, PermissionScope.NONE.value, PermissionScope.NONE.value),
     ]
 
     created = 0
@@ -394,22 +405,28 @@ def seed_calendar_permissions(db: Session):
             logger.warning(f"[Seed] Role {role_code} not found, skipping calendar permissions.")
             continue
 
-        for module, can_view, can_create, can_edit, can_activate in PERMISSIONS:
+        for feat_key, legacy_mod, view, create, update, delete in FEATURE_PERMISSIONS:
+            feature = db.scalar(select(Feature).where(Feature.feature_key == feat_key))
+            if not feature:
+                logger.warning(f"[Seed] Feature '{feat_key}' not found, skipping permissions.")
+                continue
+
             existing = db.scalar(
                 select(RolePermission).where(
                     RolePermission.role_id == role.id,
-                    RolePermission.module_name == module,
+                    RolePermission.feature_id == feature.id,
                 )
             )
             if not existing:
                 perm = RolePermission(
                     id=uuid.uuid4(),
                     role_id=role.id,
-                    module_name=module,
-                    can_view=can_view,
-                    can_create=can_create,
-                    can_edit=can_edit,
-                    can_activate=can_activate,
+                    feature_id=feature.id,
+                    module_name=legacy_mod,
+                    view_scope=view,
+                    create_scope=create,
+                    update_scope=update,
+                    delete_scope=delete,
                 )
                 db.add(perm)
                 created += 1

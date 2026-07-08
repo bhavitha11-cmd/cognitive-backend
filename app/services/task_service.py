@@ -38,6 +38,7 @@ class TaskService:
         status: str | None = None,
         dept_cat: str | None = None,
         search: str | None = None,
+        employee_id: UUID | None = None,
         user_context=None,
     ) -> tuple[list[TaskListResponse], int]:
         if user_context:
@@ -45,20 +46,24 @@ class TaskService:
                 user_context,
                 skip=skip, limit=limit, project_id=project_id,
                 status=status, dept_cat=dept_cat, search=search,
+                employee_id=employee_id,
             )
             total = self.repo.count_scoped(
                 user_context,
                 project_id=project_id, status=status,
                 dept_cat=dept_cat, search=search,
+                employee_id=employee_id,
             )
         else:
             tasks = self.repo.get_all(
                 skip=skip, limit=limit, project_id=project_id,
                 status=status, dept_cat=dept_cat, search=search,
+                employee_id=employee_id,
             )
             total = self.repo.count(
                 project_id=project_id, status=status,
                 dept_cat=dept_cat, search=search,
+                employee_id=employee_id,
             )
         return [self._build_list_response(t) for t in tasks], total
 

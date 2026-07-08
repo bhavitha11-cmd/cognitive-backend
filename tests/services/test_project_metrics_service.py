@@ -319,7 +319,7 @@ class TestRecalculate:
         t2 = make_task(status="COMPLETED", estimated_hours=5.0, actual_end_date=date(2026, 6, 15))
         db.scalars.return_value.all.return_value = [t1, t2]
 
-        with patch("app.services.project_metrics_service.AuditService"):
+        with patch("app.services.audit_service.AuditService"):
             result = ProjectMetricsService.recalculate(db, project.id)
 
         assert result["new"]["status"] == "Completed"
@@ -332,7 +332,7 @@ class TestRecalculate:
         db.get.return_value = project
         db.scalars.return_value.all.return_value = []
 
-        with patch("app.services.project_metrics_service.AuditService"):
+        with patch("app.services.audit_service.AuditService"):
             ProjectMetricsService.recalculate(db, project.id)
 
         db.flush.assert_called_once()
@@ -345,7 +345,7 @@ class TestRecalculate:
         db.get.return_value = project
         db.scalars.return_value.all.return_value = []
 
-        with patch("app.services.project_metrics_service.AuditService") as mock_audit:
+        with patch("app.services.audit_service.AuditService") as mock_audit:
             ProjectMetricsService.recalculate(db, project.id)
 
         # No change → audit.log should NOT have been called

@@ -1,5 +1,8 @@
 from app.models.role import Role
 from app.models.role_permission import RolePermission
+from app.models.module import Module
+from app.models.feature import Feature
+from app.models.role_permission_audit import RolePermissionAudit
 from app.models.department import Department
 from app.models.designation import Designation
 from app.models.employee import Employee
@@ -50,6 +53,9 @@ from app.models.task_continuity import (
 __all__ = [
     "Role",
     "RolePermission",
+    "Module",
+    "Feature",
+    "RolePermissionAudit",
     "Department",
     "Designation",
     "Employee",

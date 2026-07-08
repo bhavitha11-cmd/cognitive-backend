@@ -72,8 +72,6 @@ class ProjectMetricsService:
         # ── 2. Compute derived values ────────────────────────────────────────
         new_estimated_hours  = cls._compute_estimated_hours(tasks)
         new_actual_hours     = cls._compute_actual_hours(tasks)
-        new_planned_start    = cls._compute_planned_start(tasks)
-        new_planned_end      = cls._compute_planned_end(tasks)
         new_actual_start     = cls._compute_actual_start(tasks)
         new_actual_end       = cls._compute_actual_end(tasks)
         new_progress         = cls._compute_progress(tasks)
@@ -83,8 +81,6 @@ class ProjectMetricsService:
         old_values = {
             "estimated_hours":  float(project.estimated_hours  or 0),
             "actual_hours":     float(project.actual_hours     or 0),
-            "planned_start_date": str(project.planned_start_date) if project.planned_start_date else None,
-            "planned_end_date":   str(project.planned_end_date)   if project.planned_end_date   else None,
             "actual_start_date": str(project.actual_start_date) if project.actual_start_date else None,
             "actual_end_date":   str(project.actual_end_date)   if project.actual_end_date   else None,
             "progress":          float(project.progress         or 0),
@@ -92,10 +88,8 @@ class ProjectMetricsService:
         }
 
         new_values = {
-            "estimated_hours":  new_estimated_hours,
-            "actual_hours":     new_actual_hours,
-            "planned_start_date": str(new_planned_start) if new_planned_start else None,
-            "planned_end_date":   str(new_planned_end)   if new_planned_end   else None,
+            "estimated_hours":  float(new_estimated_hours),
+            "actual_hours":     float(new_actual_hours),
             "actual_start_date": str(new_actual_start) if new_actual_start else None,
             "actual_end_date":   str(new_actual_end)   if new_actual_end   else None,
             "progress":          new_progress,
@@ -105,8 +99,6 @@ class ProjectMetricsService:
         # ── 4. Persist ───────────────────────────────────────────────────────
         project.estimated_hours  = new_estimated_hours
         project.actual_hours     = new_actual_hours
-        project.planned_start_date = new_planned_start
-        project.planned_end_date = new_planned_end
         project.actual_start_date = new_actual_start
         project.actual_end_date  = new_actual_end
         project.progress         = new_progress

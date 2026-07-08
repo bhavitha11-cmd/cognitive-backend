@@ -203,3 +203,69 @@ class EmployeePerformanceRow(_CamelModel):
 
 class PerformanceRankingsResponse(_CamelModel):
     rankings: list[EmployeePerformanceRow] = []
+
+
+# --- New Executive Dashboard Drilldown Schemas ---
+class TeamPerformanceRow(_CamelModel):
+    team_id: UUID
+    team_name: str
+    department_name: str | None = None
+    headcount: int = 0
+    utilization_percentage: float = 0.0
+    planned_hours: float = 0.0
+    actual_hours: float = 0.0
+    task_count: int = 0
+    overdue_tasks_count: int = 0
+
+class ExecutiveTeamPerformanceResponse(_CamelModel):
+    teams: list[TeamPerformanceRow] = []
+
+class ClientPerformanceRow(_CamelModel):
+    client_id: UUID
+    client_name: str
+    total_projects: int = 0
+    active_projects: int = 0
+    completed_projects: int = 0
+    delayed_projects: int = 0
+    planned_hours: float = 0.0
+    actual_hours: float = 0.0
+    on_time_delivery_pct: float = 0.0
+
+class ExecutiveClientPerformanceResponse(_CamelModel):
+    clients: list[ClientPerformanceRow] = []
+
+class ProjectListRow(_CamelModel):
+    project_id: UUID
+    project_code: str
+    project_name: str
+    client_name: str | None = None
+    department_name: str | None = None
+    project_manager_name: str | None = None
+    planned_hours: float = 0.0
+    actual_hours: float = 0.0
+    overrun_hours: float = 0.0
+    overrun_percentage: float = 0.0
+    status: str
+    task_count: int = 0
+    completed_task_count: int = 0
+    planned_end_date: date | None = None
+
+class ExecutiveProjectListResponse(_CamelModel):
+    projects: list[ProjectListRow] = []
+
+class TaskSummaryRow(_CamelModel):
+    task_id: UUID
+    task_code: str
+    title: str
+    project_name: str | None = None
+    assignee_name: str | None = None
+    status: str
+    priority: str
+    estimated_hours: float = 0.0
+    actual_hours: float = 0.0
+    overrun_hours: float = 0.0
+    planned_delivery_date: date | None = None
+
+class ExecutiveTaskSummaryResponse(_CamelModel):
+    tasks: list[TaskSummaryRow] = []
+

@@ -131,10 +131,19 @@ class AnalyticsService:
             overrun_percentage=overrun,
         )
 
-    def get_plan_vs_actual(self) -> PlanVsActualResponse:
-        projects = self.db.scalars(
-            select(Project).where(Project.is_active == True).order_by(Project.estimated_hours.desc())
-        ).all()
+    def get_plan_vs_actual(self, user_ctx=None) -> PlanVsActualResponse:
+        from app.services.dashboard.executive_dashboard_service import ExecutiveDashboardService
+
+        # Scope projects to what the current user is allowed to see
+        scoped_project_ids = None
+        if user_ctx is not None:
+            exec_svc = ExecutiveDashboardService(self.db)
+            scoped_project_ids = exec_svc._get_scoped_project_ids(user_ctx)
+
+        projects_stmt = select(Project).where(Project.is_active == True).order_by(Project.estimated_hours.desc())
+        if scoped_project_ids is not None:
+            projects_stmt = projects_stmt.where(Project.id.in_(scoped_project_ids))
+        projects = self.db.scalars(projects_stmt).all()
 
         # FIX 4: Batch pre-fetch actual hours and task counts (no N+1)
         hours_result = self.db.execute(
@@ -330,7 +339,15 @@ class AnalyticsService:
             total_hours_company=round(total_company_hours, 2),
         )
 
-    def get_department_load(self) -> DepartmentLoadResponse:
+    def get_department_load(self, user_ctx=None) -> DepartmentLoadResponse:
+        from app.services.dashboard.executive_dashboard_service import ExecutiveDashboardService
+
+        # Scope to visible projects only
+        scoped_project_ids = None
+        if user_ctx is not None:
+            exec_svc = ExecutiveDashboardService(self.db)
+            scoped_project_ids = exec_svc._get_scoped_project_ids(user_ctx)
+
         categories = self.db.scalars(
             select(func.distinct(Task.department_category)).where(
                 Task.department_category.isnot(None), Task.is_active == True
@@ -341,18 +358,20 @@ class AnalyticsService:
         for cat in categories:
             if not cat:
                 continue
+            cat_filter = [Task.department_category == cat, Task.is_active == True]
+            if scoped_project_ids is not None:
+                cat_filter.append(Task.project_id.in_(scoped_project_ids))
+
             est = self.db.scalar(
-                select(func.coalesce(func.sum(Task.estimated_hours), 0)).where(
-                    Task.department_category == cat, Task.is_active == True
-                )
+                select(func.coalesce(func.sum(Task.estimated_hours), 0)).where(*cat_filter)
             ) or 0
             act = self.db.scalar(
                 select(func.coalesce(func.sum(TimeEntry.hours_spent), 0))
                 .join(Task, TimeEntry.task_id == Task.id)
-                .where(Task.department_category == cat, Task.is_active == True, TimeEntry.status != "REJECTED")
+                .where(*cat_filter, TimeEntry.status != "REJECTED")
             ) or 0
             count = self.db.scalar(
-                select(func.count(Task.id)).where(Task.department_category == cat, Task.is_active == True)
+                select(func.count(Task.id)).where(*cat_filter)
             ) or 0
             est_f = float(est)
             act_f = float(act)
@@ -467,11 +486,22 @@ class AnalyticsService:
 
         return ClientPerformanceResponse(clients=result)
 
-    def get_scope_distribution(self) -> ScopeDistributionResponse:
+    def get_scope_distribution(self, user_ctx=None) -> ScopeDistributionResponse:
         from app.models.scope_of_work import ScopeOfWork
+        from app.services.dashboard.executive_dashboard_service import ExecutiveDashboardService
+
+        # Scope to visible projects only
+        scoped_project_ids = None
+        if user_ctx is not None:
+            exec_svc = ExecutiveDashboardService(self.db)
+            scoped_project_ids = exec_svc._get_scoped_project_ids(user_ctx)
 
         # FIX 10: Pre-fetch all scopes to avoid N+1 db.get() inside loop
         scopes_map = {str(s.id): s for s in self.db.scalars(select(ScopeOfWork)).all()}
+
+        scope_filter = [Task.is_active == True, Task.scope_of_work_id.isnot(None)]
+        if scoped_project_ids is not None:
+            scope_filter.append(Task.project_id.in_(scoped_project_ids))
 
         scope_rows = self.db.execute(
             select(
@@ -480,7 +510,7 @@ class AnalyticsService:
                 func.coalesce(func.sum(Task.actual_hours), 0),
                 func.count(Task.id),
             )
-            .where(Task.is_active == True, Task.scope_of_work_id.isnot(None))
+            .where(*scope_filter)
             .group_by(Task.scope_of_work_id)
             .order_by(func.count(Task.id).desc())
         ).all()
@@ -497,18 +527,18 @@ class AnalyticsService:
                 task_count=row[3],
             ))
 
+        no_scope_filter = [Task.is_active == True, Task.scope_of_work_id == None]
+        if scoped_project_ids is not None:
+            no_scope_filter.append(Task.project_id.in_(scoped_project_ids))
+
         no_scope_est = self.db.scalar(
-            select(func.coalesce(func.sum(Task.estimated_hours), 0)).where(
-                Task.is_active == True, Task.scope_of_work_id == None
-            )
+            select(func.coalesce(func.sum(Task.estimated_hours), 0)).where(*no_scope_filter)
         ) or 0
         no_scope_act = self.db.scalar(
-            select(func.coalesce(func.sum(Task.actual_hours), 0)).where(
-                Task.is_active == True, Task.scope_of_work_id == None
-            )
+            select(func.coalesce(func.sum(Task.actual_hours), 0)).where(*no_scope_filter)
         ) or 0
         no_scope_count = self.db.scalar(
-            select(func.count(Task.id)).where(Task.is_active == True, Task.scope_of_work_id == None)
+            select(func.count(Task.id)).where(*no_scope_filter)
         ) or 0
         if no_scope_count > 0:
             result.append(ScopeDistribution(
@@ -671,10 +701,13 @@ class AnalyticsService:
             rework_by_task=by_task_list,
         )
 
-    def get_upcoming_deadlines(self, days: int = 14) -> list[OverdueTask]:
+    def get_upcoming_deadlines(self, days: int = 14, user_ctx=None) -> list[OverdueTask]:
+        from app.core.rbac import DataAccessLevel
+        from app.services.dashboard.dashboard_common_service import DashboardCommonService
+
         today = date.today()
         cutoff = today + timedelta(days=days)
-        tasks = self.db.execute(
+        stmt = (
             select(Task, Project.name.label("project_name"))
             .join(Project, Task.project_id == Project.id)
             .where(
@@ -684,7 +717,23 @@ class AnalyticsService:
                 Task.is_active == True,
             )
             .order_by(Task.planned_delivery_date)
-        ).all()
+        )
+
+        # Apply the same RBAC scoping pattern as get_overdue_tasks
+        if user_ctx:
+            if user_ctx.data_access_level == DataAccessLevel.SELF:
+                stmt = stmt.join(TaskAssignment, TaskAssignment.task_id == Task.id).where(
+                    TaskAssignment.employee_id == user_ctx.employee_id
+                )
+            elif user_ctx.data_access_level == DataAccessLevel.TEAM:
+                scoped_ids = DashboardCommonService.get_scoped_employee_ids(self.db, user_ctx)
+                if scoped_ids:
+                    stmt = stmt.join(TaskAssignment, TaskAssignment.task_id == Task.id).where(
+                        TaskAssignment.employee_id.in_(scoped_ids)
+                    )
+            # MANAGED/FULL: no additional filter
+
+        tasks = self.db.execute(stmt).all()
 
         # FIX 7: Batch-fetch assignee names to avoid N+1
         task_ids = [row[0].id for row in tasks]

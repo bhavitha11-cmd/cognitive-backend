@@ -84,17 +84,19 @@ class EmployeeRepository(BaseRepository):
         self.db.delete(employee)
         self.db.commit()
 
-    def get_lookup(self, limit: int = 200) -> list:
+    def get_lookup(self, limit: int = 200) -> list[Employee]:
+        from sqlalchemy.orm import joinedload
         stmt = (
-            select(
-                Employee.id, Employee.display_name, Employee.first_name,
-                Employee.last_name, Employee.employee_code, Employee.department_id,
+            select(Employee)
+            .options(
+                joinedload(Employee.employee_roles),
+                joinedload(Employee.team_assignments)
             )
             .where(Employee.is_active == True)
             .order_by(Employee.first_name, Employee.last_name)
             .limit(limit)
         )
-        return list(self.db.execute(stmt).all())
+        return list(self.db.scalars(stmt).unique().all())
 
     def get_employee_roles(self, employee_id: UUID) -> list[EmployeeRole]:
         return list(

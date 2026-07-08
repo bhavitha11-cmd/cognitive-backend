@@ -41,6 +41,7 @@ class TaskRepository(BaseRepository):
         dept_cat: str | None = None,
         search: str | None = None,
         is_active: bool | None = True,
+        employee_id: UUID | None = None,
     ) -> list[Task]:
         stmt = select(Task).options(
             joinedload(Task.project),
@@ -48,7 +49,7 @@ class TaskRepository(BaseRepository):
             selectinload(Task.assignments).joinedload(TaskAssignment.employee),
             selectinload(Task.assignments).joinedload(TaskAssignment.assigner),
         )
-        stmt = self._apply_filters(stmt, project_id, status, dept_cat, search, is_active)
+        stmt = self._apply_filters(stmt, project_id, status, dept_cat, search, is_active, employee_id)
         stmt = stmt.order_by(Task.created_at.desc()).offset(skip).limit(limit)
         return list(self.db.scalars(stmt).unique().all())
 
@@ -59,12 +60,13 @@ class TaskRepository(BaseRepository):
         dept_cat: str | None = None,
         search: str | None = None,
         is_active: bool | None = True,
+        employee_id: UUID | None = None,
     ) -> int:
         stmt = select(func.count()).select_from(Task)
-        stmt = self._apply_filters(stmt, project_id, status, dept_cat, search, is_active)
+        stmt = self._apply_filters(stmt, project_id, status, dept_cat, search, is_active, employee_id)
         return self.db.scalar(stmt) or 0
 
-    def _apply_filters(self, stmt, project_id, status, dept_cat, search, is_active):
+    def _apply_filters(self, stmt, project_id, status, dept_cat, search, is_active, employee_id=None):
         if project_id is not None:
             stmt = stmt.where(Task.project_id == project_id)
         if status is not None:
@@ -73,6 +75,11 @@ class TaskRepository(BaseRepository):
             stmt = stmt.where(Task.department_category == dept_cat)
         if is_active is not None:
             stmt = stmt.where(Task.is_active == is_active)
+        if employee_id is not None:
+            stmt = stmt.join(TaskAssignment).where(
+                TaskAssignment.employee_id == employee_id,
+                TaskAssignment.status != "CANCELLED"
+            )
         if search:
             pattern = f"%{search}%"
             stmt = stmt.where(
@@ -89,6 +96,7 @@ class TaskRepository(BaseRepository):
     def _apply_scope_filter(self, stmt, user_context):
         """Apply row-level RBAC filtering based on DataAccessLevel."""
         from app.core.rbac import DataAccessLevel
+        from app.services.organization_hierarchy_service import OrganizationHierarchyService
 
         level = user_context.data_access_level
         uid = user_context.employee_id
@@ -96,14 +104,18 @@ class TaskRepository(BaseRepository):
         if level == DataAccessLevel.FULL:
             return stmt  # No filter — sees everything
 
+        # Load subordinates (includes the user themselves + descendants)
+        hierarchy_svc = OrganizationHierarchyService(self.db)
+        subordinate_ids = hierarchy_svc.get_visible_employee_ids(uid)
+
         if level == DataAccessLevel.MANAGED:
-            # Tasks in projects where user is PM or creator
+            # Tasks in projects where PM or creator is the user themselves or any subordinate
             managed_projects_subq = (
                 select(Project.id)
                 .where(
                     or_(
-                        Project.project_manager_id == uid,
-                        Project.created_by == uid,
+                        Project.project_manager_id.in_(subordinate_ids),
+                        Project.created_by.in_(subordinate_ids),
                     ),
                     Project.is_active == True,  # noqa: E712
                 )
@@ -111,11 +123,11 @@ class TaskRepository(BaseRepository):
             return stmt.where(Task.project_id.in_(managed_projects_subq))
 
         if level == DataAccessLevel.TEAM:
-            # Tasks in user's projects OR tasks created by user OR tasks assigned to user
+            # Tasks in user's/subordinate's projects OR tasks created by user/subordinate OR tasks assigned to user/subordinate
             member_project_subq = (
                 select(ProjectMember.project_id)
                 .where(
-                    ProjectMember.employee_id == uid,
+                    ProjectMember.employee_id.in_(subordinate_ids),
                     ProjectMember.left_at.is_(None),
                 )
             )
@@ -123,8 +135,8 @@ class TaskRepository(BaseRepository):
                 select(Project.id)
                 .where(
                     or_(
-                        Project.project_manager_id == uid,
-                        Project.created_by == uid,
+                        Project.project_manager_id.in_(subordinate_ids),
+                        Project.created_by.in_(subordinate_ids),
                         Project.id.in_(member_project_subq),
                     ),
                     Project.is_active == True,  # noqa: E712
@@ -133,37 +145,37 @@ class TaskRepository(BaseRepository):
             assigned_tasks_subq = (
                 select(TaskAssignment.task_id)
                 .where(
-                    TaskAssignment.employee_id == uid,
+                    TaskAssignment.employee_id.in_(subordinate_ids),
                     TaskAssignment.status != "CANCELLED",
                 )
             )
             return stmt.where(
                 or_(
                     Task.project_id.in_(visible_projects_subq),
-                    Task.created_by == uid,
+                    Task.created_by.in_(subordinate_ids),
                     Task.id.in_(assigned_tasks_subq),
                 )
             )
 
-        # SELF — tasks assigned to user, created by user, or in projects they manage
+        # SELF — tasks assigned to user/subordinate, created by user/subordinate, or in projects they/their subordinates manage
         assigned_tasks_subq = (
             select(TaskAssignment.task_id)
             .where(
-                TaskAssignment.employee_id == uid,
+                TaskAssignment.employee_id.in_(subordinate_ids),
                 TaskAssignment.status != "CANCELLED",
             )
         )
         pm_project_subq = (
             select(Project.id)
             .where(
-                Project.project_manager_id == uid,
+                Project.project_manager_id.in_(subordinate_ids),
                 Project.is_active == True,  # noqa: E712
             )
         )
         return stmt.where(
             or_(
                 Task.id.in_(assigned_tasks_subq),
-                Task.created_by == uid,
+                Task.created_by.in_(subordinate_ids),
                 Task.project_id.in_(pm_project_subq),
             )
         )
@@ -178,6 +190,7 @@ class TaskRepository(BaseRepository):
         dept_cat: str | None = None,
         search: str | None = None,
         is_active: bool | None = True,
+        employee_id: UUID | None = None,
     ) -> list[Task]:
         stmt = select(Task).options(
             joinedload(Task.project),
@@ -185,7 +198,7 @@ class TaskRepository(BaseRepository):
             selectinload(Task.assignments).joinedload(TaskAssignment.employee),
             selectinload(Task.assignments).joinedload(TaskAssignment.assigner),
         )
-        stmt = self._apply_filters(stmt, project_id, status, dept_cat, search, is_active)
+        stmt = self._apply_filters(stmt, project_id, status, dept_cat, search, is_active, employee_id)
         stmt = self._apply_scope_filter(stmt, user_context)
         stmt = stmt.order_by(Task.created_at.desc()).offset(skip).limit(limit)
         return list(self.db.scalars(stmt).unique().all())
@@ -198,9 +211,10 @@ class TaskRepository(BaseRepository):
         dept_cat: str | None = None,
         search: str | None = None,
         is_active: bool | None = True,
+        employee_id: UUID | None = None,
     ) -> int:
         stmt = select(func.count()).select_from(Task)
-        stmt = self._apply_filters(stmt, project_id, status, dept_cat, search, is_active)
+        stmt = self._apply_filters(stmt, project_id, status, dept_cat, search, is_active, employee_id)
         stmt = self._apply_scope_filter(stmt, user_context)
         return self.db.scalar(stmt) or 0
 

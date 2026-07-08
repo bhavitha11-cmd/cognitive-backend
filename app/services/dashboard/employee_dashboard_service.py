@@ -16,10 +16,12 @@ class EmployeeDashboardService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_summary(self, employee_id: UUID) -> EmployeeSummary:
+    def get_summary(self, employee_id: UUID, from_date: date | None = None, to_date: date | None = None) -> EmployeeSummary:
         today = date.today()
         start_of_week = today - timedelta(days=today.weekday())
-        start_of_month = date(today.year, today.month, 1)
+        # Use provided date range or default to current month
+        period_start = from_date or date(today.year, today.month, 1)
+        period_end = to_date or today
 
         # 1. Task counts
         today_tasks = self.db.scalar(
@@ -85,8 +87,8 @@ class EmployeeDashboardService:
         monthly_hours = float(self.db.scalar(
             select(func.coalesce(func.sum(TimeEntry.hours_spent), 0.0)).where(
                 TimeEntry.employee_id == employee_id,
-                TimeEntry.date >= start_of_month,
-                TimeEntry.date <= today,
+                TimeEntry.date >= period_start,
+                TimeEntry.date <= period_end,
                 TimeEntry.status != "REJECTED"
             )
         ) or 0.0)
@@ -114,9 +116,11 @@ class EmployeeDashboardService:
             personal_productivity_percentage=prod_pct
         )
 
-    def get_charts(self, employee_id: UUID) -> EmployeeCharts:
+    def get_charts(self, employee_id: UUID, from_date: date | None = None, to_date: date | None = None) -> EmployeeCharts:
         today = date.today()
-        start_of_week = today - timedelta(days=today.weekday())
+        period_end = to_date or today
+        period_start = from_date or (period_end - timedelta(days=29))
+        start_of_week = period_end - timedelta(days=period_end.weekday())
 
         # 1. Daily Hours (last 7 calendar days)
         daily_hours = []

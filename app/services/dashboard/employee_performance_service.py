@@ -38,7 +38,7 @@ class EmployeePerformanceService:
             select(Employee)
             .options(
                 joinedload(Employee.department),
-                selectinload(Employee.team_memberships).joinedload(TeamMember.team),
+                selectinload(Employee.team_assignments).joinedload(TeamMember.team),
             )
             .where(Employee.is_active == True)
         )

@@ -60,20 +60,23 @@ class DashboardCommonService:
         if user_ctx.data_access_level == DataAccessLevel.FULL:
             return None
 
-        elif user_ctx.data_access_level == DataAccessLevel.MANAGED:
+        from app.services.organization_hierarchy_service import OrganizationHierarchyService
+        hierarchy_svc = OrganizationHierarchyService(db)
+        subordinate_ids = hierarchy_svc.get_visible_employee_ids(user_ctx.employee_id)
+
+        if user_ctx.data_access_level == DataAccessLevel.MANAGED:
             from app.models.project import Project
             from app.models.project_member import ProjectMember
             from app.models.task_assignment import TaskAssignment
             from app.models.task import Task
-            from uuid import UUID
 
-            # Projects managed/created by user
+            # Projects managed/created by user or their subordinates
             project_ids_stmt = select(Project.id).where(
-                (Project.project_manager_id == user_ctx.employee_id) | (Project.created_by == user_ctx.employee_id)
+                (Project.project_manager_id.in_(subordinate_ids)) | (Project.created_by.in_(subordinate_ids))
             )
             project_ids = db.scalars(project_ids_stmt).all()
 
-            emp_ids = set()
+            emp_ids = set(subordinate_ids)
             if project_ids:
                 # project members
                 members_stmt = select(ProjectMember.employee_id).where(ProjectMember.project_id.in_(project_ids))
@@ -83,29 +86,24 @@ class DashboardCommonService:
                 tasks_stmt = select(TaskAssignment.employee_id).join(Task).where(Task.project_id.in_(project_ids))
                 emp_ids.update(db.scalars(tasks_stmt).all())
 
-            # Always include themselves
-            emp_ids.add(user_ctx.employee_id)
             return list(emp_ids)
 
         elif user_ctx.data_access_level == DataAccessLevel.TEAM:
             from app.models.team_member import TeamMember
-            from uuid import UUID
 
-            # Find teams led by user
+            # Find teams led by user or subordinates
             team_ids_stmt = select(TeamMember.team_id).where(
-                TeamMember.employee_id == user_ctx.employee_id,
+                TeamMember.employee_id.in_(subordinate_ids),
                 TeamMember.role_in_team.in_(["LEAD", "LEADER", "TEAM_LEADER"])
             )
             team_ids = db.scalars(team_ids_stmt).all()
 
-            emp_ids = set()
+            emp_ids = set(subordinate_ids)
             if team_ids:
                 members_stmt = select(TeamMember.employee_id).where(TeamMember.team_id.in_(team_ids))
                 emp_ids.update(db.scalars(members_stmt).all())
 
-            # Always include themselves
-            emp_ids.add(user_ctx.employee_id)
             return list(emp_ids)
 
         else:  # SELF
-            return [user_ctx.employee_id]
+            return list(subordinate_ids)

@@ -187,8 +187,28 @@ def get_project_stats(
     response_model=APIResponse,
     dependencies=[Depends(require_permission("Projects", "edit"))],
 )
-def update_project(id: uuid.UUID, project_in: ProjectUpdate, service=Depends(_get_service)):
+def update_project(
+    id: uuid.UUID,
+    project_in: ProjectUpdate,
+    service=Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
+):
+    from app.core.rbac import DataAccessLevel
     try:
+        project_obj = service.repo.get_by_id(id)
+        if not project_obj:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+        is_admin = user_ctx.is_super_admin or user_ctx.data_access_level == DataAccessLevel.FULL
+        is_pm = (project_obj.project_manager_id == user_ctx.employee_id)
+        is_creator = (project_obj.created_by == user_ctx.employee_id)
+
+        if not is_admin and not is_pm and not is_creator:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the project manager, creator, or an administrator can edit this project"
+            )
+
         project = service.update(id, project_in)
     except ValueError as e:
         code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST
@@ -205,8 +225,27 @@ def update_project(id: uuid.UUID, project_in: ProjectUpdate, service=Depends(_ge
     response_model=APIResponse,
     dependencies=[Depends(require_permission("Projects", "activate"))],
 )
-def delete_project(id: uuid.UUID, service=Depends(_get_service)):
+def delete_project(
+    id: uuid.UUID,
+    service=Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
+):
+    from app.core.rbac import DataAccessLevel
     try:
+        project_obj = service.repo.get_by_id(id)
+        if not project_obj:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+        is_admin = user_ctx.is_super_admin or user_ctx.data_access_level == DataAccessLevel.FULL
+        is_pm = (project_obj.project_manager_id == user_ctx.employee_id)
+        is_creator = (project_obj.created_by == user_ctx.employee_id)
+
+        if not is_admin and not is_pm and not is_creator:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the project manager, creator, or an administrator can delete this project"
+            )
+
         service.delete(id)
     except ValueError as e:
         code = status.HTTP_404_NOT_FOUND if "not found" in str(e) else status.HTTP_400_BAD_REQUEST

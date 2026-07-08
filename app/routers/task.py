@@ -48,6 +48,7 @@ def list_tasks(
     status: str | None = Query(default=None),
     dept_cat: str | None = Query(default=None),
     search: str | None = Query(default=None),
+    employee_id: uuid.UUID | None = Query(default=None),
     service: TaskService = Depends(_get_service),
     user_ctx: UserContext = Depends(require_data_access),
 ):
@@ -58,6 +59,7 @@ def list_tasks(
         status=status,
         dept_cat=dept_cat,
         search=search,
+        employee_id=employee_id,
         user_context=user_ctx,
     )
     return APIResponse(
@@ -225,16 +227,58 @@ def update_task(
     if not existing_task or not existing_task.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
+    # Verify that the user has visibility to the task
+    from app.repositories.task_repository import TaskRepository
+    task_repo = TaskRepository(db)
+    if not task_repo.is_visible_to_user(id, user_ctx):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to view/edit this task"
+        )
+
     is_creator = (existing_task.created_by == user_ctx.employee_id)
     is_admin = user_ctx.is_super_admin or user_ctx.data_access_level == DataAccessLevel.FULL
 
-    # If user is NOT the creator and NOT admin → restrict to status/progress only
-    if not is_creator and not is_admin:
-        restricted = TaskUpdate(
-            status=data.status,
-            progress=data.progress,
+    # Check if the user is the assignee
+    is_assignee = False
+    for assign in existing_task.assignments:
+        if assign.employee_id == user_ctx.employee_id and assign.status != "CANCELLED":
+            is_assignee = True
+            break
+
+    # Check if any assignee is a subordinate of the user
+    from app.services.organization_hierarchy_service import OrganizationHierarchyService
+    hierarchy_svc = OrganizationHierarchyService(db)
+    subordinate_ids = hierarchy_svc.get_visible_employee_ids(user_ctx.employee_id)
+    
+    is_subordinate_task = False
+    for assign in existing_task.assignments:
+        if assign.employee_id in subordinate_ids and assign.status != "CANCELLED":
+            is_subordinate_task = True
+            break
+
+    is_manager = is_subordinate_task or (existing_task.created_by in subordinate_ids)
+
+    # Deny access if not creator, admin, manager, or assignee
+    if not is_creator and not is_admin and not is_manager and not is_assignee:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to edit this task"
         )
-        data = restricted
+
+    # If user is assignee (but NOT creator/admin/manager) -> restrict to limited edit
+    if not is_creator and not is_admin and not is_manager:
+        restricted_data = {}
+        if data.status is not None:
+            restricted_data["status"] = data.status
+        if data.progress is not None:
+            restricted_data["progress"] = data.progress
+        if data.remarks is not None:
+            restricted_data["remarks"] = data.remarks
+        if data.actual_hours is not None:
+            restricted_data["actual_hours"] = data.actual_hours
+
+        data = TaskUpdate(**restricted_data)
 
     try:
         task = service.update(id, data)

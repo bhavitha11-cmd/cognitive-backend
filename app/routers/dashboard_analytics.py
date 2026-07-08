@@ -157,10 +157,145 @@ def get_executive_recent_activities(
     return APIResponse(success=True, message="Recent activities retrieved", data=data)
 
 
+# --- Executive Tabbed Drilldown Routers ---
+@router.get(
+    "/executive/team-performance",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Analytics", "view"))]
+)
+def get_executive_team_performance(
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+    user_ctx: UserContext = Depends(require_data_access)
+):
+    key = f"erp:dashboard:executive:team-perf:{user_ctx.employee_id}:from:{from_date}:to:{to_date}"
+    cached = get_cache(key)
+    if cached:
+        try:
+            return APIResponse(success=True, message="Executive team performance retrieved (cached)", data=json.loads(cached))
+        except Exception:
+            pass
+
+    svc = ExecutiveDashboardService(db)
+    res = svc.get_team_performance(from_date, to_date, user_ctx=user_ctx)
+    data = res.model_dump(mode="json", by_alias=True)
+    set_cache(key, json.dumps(data), ttl=30)
+    return APIResponse(success=True, message="Executive team performance retrieved", data=data)
+
+@router.get(
+    "/executive/client-performance",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Analytics", "view"))]
+)
+def get_executive_client_performance(
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+    user_ctx: UserContext = Depends(require_data_access)
+):
+    key = f"erp:dashboard:executive:client-perf:{user_ctx.employee_id}:from:{from_date}:to:{to_date}"
+    cached = get_cache(key)
+    if cached:
+        try:
+            return APIResponse(success=True, message="Executive client performance retrieved (cached)", data=json.loads(cached))
+        except Exception:
+            pass
+
+    svc = ExecutiveDashboardService(db)
+    res = svc.get_client_performance_exec(from_date, to_date, user_ctx=user_ctx)
+    data = res.model_dump(mode="json", by_alias=True)
+    set_cache(key, json.dumps(data), ttl=30)
+    return APIResponse(success=True, message="Executive client performance retrieved", data=data)
+
+@router.get(
+    "/executive/individual-performance",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Analytics", "view"))]
+)
+def get_executive_individual_performance(
+    department_id: UUID | None = Query(None),
+    team_id: UUID | None = Query(None),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+    user_ctx: UserContext = Depends(require_data_access)
+):
+    key = f"erp:dashboard:executive:indiv-perf:{user_ctx.employee_id}:dept:{department_id}:team:{team_id}:from:{from_date}:to:{to_date}"
+    cached = get_cache(key)
+    if cached:
+        try:
+            return APIResponse(success=True, message="Executive individual performance retrieved (cached)", data=json.loads(cached))
+        except Exception:
+            pass
+
+    svc = ExecutiveDashboardService(db)
+    rankings = svc.get_individual_performance(department_id, team_id, from_date, to_date, user_ctx=user_ctx)
+    data = {"rankings": [r.model_dump(mode="json", by_alias=True) for r in rankings]}
+    set_cache(key, json.dumps(data), ttl=30)
+    return APIResponse(success=True, message="Executive individual performance retrieved", data=data)
+
+@router.get(
+    "/executive/project-list",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Analytics", "view"))]
+)
+def get_executive_project_list(
+    department_id: UUID | None = Query(None),
+    team_id: UUID | None = Query(None),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+    user_ctx: UserContext = Depends(require_data_access)
+):
+    key = f"erp:dashboard:executive:proj-list:{user_ctx.employee_id}:dept:{department_id}:team:{team_id}:from:{from_date}:to:{to_date}"
+    cached = get_cache(key)
+    if cached:
+        try:
+            return APIResponse(success=True, message="Executive project list retrieved (cached)", data=json.loads(cached))
+        except Exception:
+            pass
+
+    svc = ExecutiveDashboardService(db)
+    res = svc.get_project_list(department_id, team_id, from_date, to_date, user_ctx=user_ctx)
+    data = res.model_dump(mode="json", by_alias=True)
+    set_cache(key, json.dumps(data), ttl=30)
+    return APIResponse(success=True, message="Executive project list retrieved", data=data)
+
+@router.get(
+    "/executive/task-summary",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Analytics", "view"))]
+)
+def get_executive_task_summary(
+    department_id: UUID | None = Query(None),
+    team_id: UUID | None = Query(None),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+    user_ctx: UserContext = Depends(require_data_access)
+):
+    key = f"erp:dashboard:executive:task-summary:{user_ctx.employee_id}:dept:{department_id}:team:{team_id}:from:{from_date}:to:{to_date}"
+    cached = get_cache(key)
+    if cached:
+        try:
+            return APIResponse(success=True, message="Executive task summary retrieved (cached)", data=json.loads(cached))
+        except Exception:
+            pass
+
+    svc = ExecutiveDashboardService(db)
+    res = svc.get_task_summary(department_id, team_id, from_date, to_date, user_ctx=user_ctx)
+    data = res.model_dump(mode="json", by_alias=True)
+    set_cache(key, json.dumps(data), ttl=30)
+    return APIResponse(success=True, message="Executive task summary retrieved", data=data)
+
+
+
 # --- Project Dashboard Router ---
 @router.get(
     "/project/{project_id}/summary",
     response_model=APIResponse,
+    dependencies=[Depends(require_any_permission(("Analytics", "view"), ("Projects", "view")))],
 )
 def get_project_summary(
     project_id: UUID,
@@ -198,6 +333,7 @@ def get_project_summary(
 @router.get(
     "/project/{project_id}/charts",
     response_model=APIResponse,
+    dependencies=[Depends(require_any_permission(("Analytics", "view"), ("Projects", "view")))],
 )
 def get_project_charts(
     project_id: UUID,
@@ -306,9 +442,11 @@ def get_team_lead_attendance(
 )
 def get_employee_summary(
     db: Session = Depends(get_db),
-    user_ctx: UserContext = Depends(require_data_access)
+    user_ctx: UserContext = Depends(require_data_access),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
 ):
-    key = f"erp:dashboard:employee:{user_ctx.employee_id}:summary"
+    key = f"erp:dashboard:employee:{user_ctx.employee_id}:summary:from:{from_date}:to:{to_date}"
     cached = get_cache(key)
     if cached:
         try:
@@ -317,7 +455,7 @@ def get_employee_summary(
             pass
 
     svc = EmployeeDashboardService(db)
-    res = svc.get_summary(user_ctx.employee_id)
+    res = svc.get_summary(user_ctx.employee_id, from_date=from_date, to_date=to_date)
     data = res.model_dump(mode="json", by_alias=True)
     set_cache(key, json.dumps(data), ttl=5)
     return APIResponse(success=True, message="Employee summary retrieved", data=data)
@@ -329,9 +467,11 @@ def get_employee_summary(
 )
 def get_employee_charts(
     db: Session = Depends(get_db),
-    user_ctx: UserContext = Depends(require_data_access)
+    user_ctx: UserContext = Depends(require_data_access),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
 ):
-    key = f"erp:dashboard:employee:{user_ctx.employee_id}:charts"
+    key = f"erp:dashboard:employee:{user_ctx.employee_id}:charts:from:{from_date}:to:{to_date}"
     cached = get_cache(key)
     if cached:
         try:
@@ -340,7 +480,7 @@ def get_employee_charts(
             pass
 
     svc = EmployeeDashboardService(db)
-    res = svc.get_charts(user_ctx.employee_id)
+    res = svc.get_charts(user_ctx.employee_id, from_date=from_date, to_date=to_date)
     data = res.model_dump(mode="json", by_alias=True)
     set_cache(key, json.dumps(data), ttl=5)
     return APIResponse(success=True, message="Employee charts retrieved", data=data)
@@ -414,3 +554,47 @@ def export_performance_rankings(
         headers={"Content-Disposition": "attachment; filename=employee_performance_rankings.csv"}
     )
 
+
+# --- Employee Load Chart ---
+@router.get(
+    "/employee-load",
+    response_model=APIResponse,
+    dependencies=[Depends(require_any_permission(("Dashboard", "view"), ("Analytics", "view")))],
+)
+def get_employee_load_chart(
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    department_id: UUID | None = Query(None),
+    team_id: UUID | None = Query(None),
+    db: Session = Depends(get_db),
+    user_ctx: UserContext = Depends(require_data_access),
+):
+    """
+    Returns hierarchical employee load data formatted for a Gantt chart.
+    Respects role-based data scoping (SELF/TEAM/MANAGED/FULL).
+    """
+    from datetime import timedelta
+
+    if not from_date:
+        from_date = date.today()
+    if not to_date:
+        to_date = from_date + timedelta(days=90)
+
+    from app.services.planning_service import PlanningService
+    svc = PlanningService(db, current_user_id=user_ctx.employee_id)
+    rows = svc.get_employee_load_chart(
+        requesting_employee_id=user_ctx.employee_id,
+        from_date=from_date,
+        to_date=to_date,
+        department_id=department_id,
+        team_id=team_id,
+    )
+    return APIResponse(
+        success=True,
+        message="Employee load chart retrieved",
+        data={
+            "rows": rows,
+            "from_date": from_date.isoformat(),
+            "to_date": to_date.isoformat(),
+        },
+    )

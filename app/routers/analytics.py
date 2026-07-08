@@ -31,8 +31,11 @@ def dashboard_stats(
 
 
 @router.get("/plan-vs-actual", response_model=APIResponse)
-def plan_vs_actual(service: AnalyticsService = Depends(_get_service)):
-    result = service.get_plan_vs_actual()
+def plan_vs_actual(
+    service: AnalyticsService = Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
+):
+    result = service.get_plan_vs_actual(user_ctx=user_ctx)
     return APIResponse(success=True, message="Plan vs actual data retrieved", data=result.model_dump())
 
 
@@ -48,8 +51,11 @@ def utilization(
 
 
 @router.get("/department-load", response_model=APIResponse)
-def department_load(service: AnalyticsService = Depends(_get_service)):
-    result = service.get_department_load()
+def department_load(
+    service: AnalyticsService = Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
+):
+    result = service.get_department_load(user_ctx=user_ctx)
     return APIResponse(success=True, message="Department load retrieved", data=result.model_dump())
 
 
@@ -66,8 +72,9 @@ def overdue_tasks(
 def upcoming_deadlines(
     days: int = Query(14, ge=1, le=90),
     service: AnalyticsService = Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
 ):
-    result = service.get_upcoming_deadlines(days)
+    result = service.get_upcoming_deadlines(days, user_ctx=user_ctx)
     return APIResponse(success=True, message="Upcoming deadlines retrieved", data={"tasks": [t.model_dump() for t in result]})
 
 
@@ -78,8 +85,11 @@ def client_performance(service: AnalyticsService = Depends(_get_service)):
 
 
 @router.get("/scope-distribution", response_model=APIResponse)
-def scope_distribution(service: AnalyticsService = Depends(_get_service)):
-    result = service.get_scope_distribution()
+def scope_distribution(
+    service: AnalyticsService = Depends(_get_service),
+    user_ctx: UserContext = Depends(require_data_access),
+):
+    result = service.get_scope_distribution(user_ctx=user_ctx)
     return APIResponse(success=True, message="Scope distribution retrieved", data=result.model_dump())
 
 

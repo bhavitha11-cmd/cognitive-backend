@@ -23,8 +23,18 @@ from app.schemas.dashboard_analytics import (
     ExecutiveAlerts,
     DashboardAlert,
     ExecutiveRecentActivities,
-    RecentActivity
+    RecentActivity,
+    TeamPerformanceRow,
+    ExecutiveTeamPerformanceResponse,
+    ClientPerformanceRow,
+    ExecutiveClientPerformanceResponse,
+    ProjectListRow,
+    ExecutiveProjectListResponse,
+    TaskSummaryRow,
+    ExecutiveTaskSummaryResponse,
+    EmployeePerformanceRow
 )
+
 
 class ExecutiveDashboardService:
     def __init__(self, db: Session):
@@ -34,21 +44,75 @@ class ExecutiveDashboardService:
         from app.core.rbac import DataAccessLevel
         if not user_ctx or user_ctx.data_access_level == DataAccessLevel.FULL:
             return None
-        
+
+        from app.services.organization_hierarchy_service import OrganizationHierarchyService
+        hierarchy_svc = OrganizationHierarchyService(self.db)
+        subordinate_ids = hierarchy_svc.get_visible_employee_ids(user_ctx.employee_id)
+
+        # Team assignments visibility: projects with active tasks assigned to user's or reports' teams
+        from app.models.team_member import TeamMember
+        user_team_ids_stmt = select(TeamMember.team_id).where(
+            TeamMember.employee_id.in_(subordinate_ids),
+            TeamMember.left_at.is_(None),
+        )
+        project_by_team_subq = (
+            select(Task.project_id).distinct()
+            .where(
+                Task.team_id.in_(user_team_ids_stmt),
+                Task.is_active == True,
+            )
+        )
+
         if user_ctx.data_access_level == DataAccessLevel.MANAGED:
-            return self.db.scalars(
+            return list(self.db.scalars(
                 select(Project.id).where(
-                    (Project.project_manager_id == user_ctx.employee_id) | (Project.created_by == user_ctx.employee_id)
+                    (Project.project_manager_id.in_(subordinate_ids)) |
+                    (Project.created_by.in_(subordinate_ids)) |
+                    (Project.id.in_(project_by_team_subq))
                 )
-            ).all()
+            ).all())
         elif user_ctx.data_access_level == DataAccessLevel.TEAM:
-            return self.db.scalars(
-                select(Project.id).join(ProjectMember, ProjectMember.project_id == Project.id).where(ProjectMember.employee_id == user_ctx.employee_id)
-            ).all()
+            member_project_subq = (
+                select(ProjectMember.project_id)
+                .where(
+                    ProjectMember.employee_id.in_(subordinate_ids),
+                    ProjectMember.left_at.is_(None),
+                )
+            )
+            return list(self.db.scalars(
+                select(Project.id).where(
+                    (Project.project_manager_id.in_(subordinate_ids)) |
+                    (Project.created_by.in_(subordinate_ids)) |
+                    (Project.id.in_(member_project_subq)) |
+                    (Project.id.in_(project_by_team_subq))
+                )
+            ).all())
         else:  # SELF
-            return self.db.scalars(
-                select(Task.project_id).join(TaskAssignment, TaskAssignment.task_id == Task.id).where(TaskAssignment.employee_id == user_ctx.employee_id)
-            ).all()
+            member_project_subq = (
+                select(ProjectMember.project_id)
+                .where(
+                    ProjectMember.employee_id.in_(subordinate_ids),
+                    ProjectMember.left_at.is_(None),
+                )
+            )
+            assigned_project_subq = (
+                select(Task.project_id).distinct()
+                .join(TaskAssignment, TaskAssignment.task_id == Task.id)
+                .where(
+                    TaskAssignment.employee_id.in_(subordinate_ids),
+                    TaskAssignment.status != "CANCELLED",
+                    Task.is_active == True,
+                )
+            )
+            return list(self.db.scalars(
+                select(Project.id).where(
+                    (Project.project_manager_id.in_(subordinate_ids)) |
+                    (Project.created_by.in_(subordinate_ids)) |
+                    (Project.id.in_(member_project_subq)) |
+                    (Project.id.in_(assigned_project_subq)) |
+                    (Project.id.in_(project_by_team_subq))
+                )
+            ).all())
 
     def get_summary(self, from_date: date | None = None, to_date: date | None = None, user_ctx = None) -> ExecutiveSummary:
         today = date.today()
@@ -421,4 +485,327 @@ class ExecutiveDashboardService:
                 timestamp=l.performed_at
             ))
         return ExecutiveRecentActivities(activities=activities)
+
+    def get_team_performance(self, from_date: date | None = None, to_date: date | None = None, user_ctx = None) -> ExecutiveTeamPerformanceResponse:
+        today = date.today()
+        if not from_date:
+            from_date = today - timedelta(days=30)
+        if not to_date:
+            to_date = today
+
+        scoped_employee_ids = DashboardCommonService.get_scoped_employee_ids(self.db, user_ctx) if user_ctx else None
+
+        from app.models.team import Team
+        from app.models.team_member import TeamMember
+
+        teams_stmt = select(Team).where(Team.is_active == True)
+        if scoped_employee_ids is not None:
+            teams_stmt = teams_stmt.join(TeamMember).where(TeamMember.employee_id.in_(scoped_employee_ids)).distinct()
+
+        teams = self.db.scalars(teams_stmt).all()
+
+        result = []
+        for team in teams:
+            mbr_stmt = select(TeamMember.employee_id).where(TeamMember.team_id == team.id, TeamMember.left_at.is_(None))
+            if scoped_employee_ids is not None:
+                mbr_stmt = mbr_stmt.where(TeamMember.employee_id.in_(scoped_employee_ids))
+            team_emp_ids = list(self.db.scalars(mbr_stmt).all())
+            headcount = len(team_emp_ids)
+
+            act_hours = 0.0
+            if team_emp_ids:
+                act_hours = float(self.db.scalar(
+                    select(func.coalesce(func.sum(TimeEntry.hours_spent), 0.0))
+                    .where(
+                        TimeEntry.employee_id.in_(team_emp_ids),
+                        TimeEntry.date >= from_date,
+                        TimeEntry.date <= to_date,
+                        TimeEntry.status != "REJECTED"
+                    )
+                ) or 0.0)
+
+            task_filter = [Task.team_id == team.id, Task.is_active == True]
+            plan_hours = float(self.db.scalar(
+                select(func.coalesce(func.sum(Task.estimated_hours), 0.0)).where(*task_filter)
+            ) or 0.0)
+
+            task_count = self.db.scalar(
+                select(func.count(Task.id)).where(*task_filter)
+            ) or 0
+
+            overdue_tasks_count = self.db.scalar(
+                select(func.count(Task.id)).where(
+                    *task_filter,
+                    Task.planned_delivery_date < today,
+                    Task.status.notin_(["COMPLETED", "CANCELLED"])
+                )
+            ) or 0
+
+            total_capacity = 0.0
+            if team_emp_ids:
+                working_days = DashboardCommonService.get_working_days_in_period(from_date, to_date, self.db)
+                latest_week_subq = (
+                    select(
+                        EmployeeSchedule.employee_id,
+                        func.max(EmployeeSchedule.week_start_date).label("latest_week"),
+                    )
+                    .where(EmployeeSchedule.employee_id.in_(team_emp_ids))
+                    .group_by(EmployeeSchedule.employee_id)
+                    .subquery()
+                )
+                schedules_stmt = (
+                    select(EmployeeSchedule.employee_id, EmployeeSchedule.available_hours)
+                    .join(
+                        latest_week_subq,
+                        and_(
+                            EmployeeSchedule.employee_id == latest_week_subq.c.employee_id,
+                            EmployeeSchedule.week_start_date == latest_week_subq.c.latest_week,
+                        ),
+                    )
+                )
+                latest_schedules = {
+                    emp_id: float(avail)
+                    for emp_id, avail in self.db.execute(schedules_stmt).all()
+                }
+                for emp_id in team_emp_ids:
+                    weekly_hours = latest_schedules.get(emp_id, 40.0)
+                    total_capacity += working_days * (weekly_hours / 5.0)
+
+            utilization_pct = (act_hours / total_capacity * 100) if total_capacity > 0.0 else 0.0
+
+            result.append(TeamPerformanceRow(
+                team_id=team.id,
+                team_name=team.team_name,
+                department_name=team.department.name if team.department else None,
+                headcount=headcount,
+                utilization_percentage=round(utilization_pct, 2),
+                planned_hours=plan_hours,
+                actual_hours=act_hours,
+                task_count=task_count,
+                overdue_tasks_count=overdue_tasks_count
+            ))
+
+        return ExecutiveTeamPerformanceResponse(teams=result)
+
+    def get_client_performance_exec(self, from_date: date | None = None, to_date: date | None = None, user_ctx = None) -> ExecutiveClientPerformanceResponse:
+        scoped_project_ids = self._get_scoped_project_ids(user_ctx)
+
+        from app.models.client import Client
+
+        clients = self.db.scalars(select(Client).where(Client.is_active == True).order_by(Client.name)).all()
+
+        result = []
+        for c in clients:
+            proj_stmt = select(Project).where(Project.client_id == c.id, Project.is_active == True)
+            if scoped_project_ids is not None:
+                proj_stmt = proj_stmt.where(Project.id.in_(scoped_project_ids))
+            projects = self.db.scalars(proj_stmt).all()
+            if not projects and scoped_project_ids is not None:
+                continue
+
+            total = len(projects)
+            active = sum(1 for p in projects if p.status in ("In Progress", "On Hold"))
+            completed = sum(1 for p in projects if p.status == "Completed")
+
+            delayed = 0
+            for p in projects:
+                if p.actual_end_date and p.planned_end_date:
+                    if p.actual_end_date > p.planned_end_date:
+                        delayed += 1
+                elif p.planned_end_date and p.planned_end_date < date.today() and p.status not in ("Completed", "Cancelled"):
+                    delayed += 1
+
+            est = sum(float(p.estimated_hours or 0) for p in projects)
+
+            p_ids = [p.id for p in projects]
+            act = 0.0
+            if p_ids:
+                time_stmt = select(func.coalesce(func.sum(TimeEntry.hours_spent), 0.0)).where(
+                    TimeEntry.project_id.in_(p_ids),
+                    TimeEntry.status != "REJECTED"
+                )
+                if from_date:
+                    time_stmt = time_stmt.where(TimeEntry.date >= from_date)
+                if to_date:
+                    time_stmt = time_stmt.where(TimeEntry.date <= to_date)
+                act = float(self.db.scalar(time_stmt) or 0.0)
+
+            on_time_pct = round(((completed - delayed) / completed * 100) if completed > 0 else 100.0, 1)
+
+            result.append(ClientPerformanceRow(
+                client_id=c.id,
+                client_name=c.name,
+                total_projects=total,
+                active_projects=active,
+                completed_projects=completed,
+                delayed_projects=delayed,
+                planned_hours=est,
+                actual_hours=act,
+                on_time_delivery_pct=on_time_pct
+            ))
+
+        return ExecutiveClientPerformanceResponse(clients=result)
+
+    def get_individual_performance(
+        self,
+        department_id: UUID | None = None,
+        team_id: UUID | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        user_ctx = None
+    ) -> list[EmployeePerformanceRow]:
+        from app.services.dashboard.employee_performance_service import EmployeePerformanceService
+        perf_svc = EmployeePerformanceService(self.db)
+        return perf_svc.get_rankings(department_id, team_id, from_date, to_date, user_ctx)
+
+    def get_project_list(
+        self,
+        department_id: UUID | None = None,
+        team_id: UUID | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        user_ctx = None
+    ) -> ExecutiveProjectListResponse:
+        scoped_project_ids = self._get_scoped_project_ids(user_ctx)
+
+        proj_stmt = select(Project).where(Project.is_active == True)
+        if scoped_project_ids is not None:
+            proj_stmt = proj_stmt.where(Project.id.in_(scoped_project_ids))
+        if department_id:
+            proj_stmt = proj_stmt.where(Project.department_id == department_id)
+        if team_id:
+            team_project_subq = select(Task.project_id).where(Task.team_id == team_id, Task.is_active == True).distinct()
+            proj_stmt = proj_stmt.where(Project.id.in_(team_project_subq))
+
+        projects = self.db.scalars(proj_stmt).all()
+        project_ids = [p.id for p in projects]
+
+        if not project_ids:
+            return ExecutiveProjectListResponse(projects=[])
+
+        time_stmt = select(TimeEntry.project_id, func.sum(TimeEntry.hours_spent)).where(
+            TimeEntry.project_id.in_(project_ids),
+            TimeEntry.status != "REJECTED"
+        )
+        if from_date:
+            time_stmt = time_stmt.where(TimeEntry.date >= from_date)
+        if to_date:
+            time_stmt = time_stmt.where(TimeEntry.date <= to_date)
+
+        hours_by_project = {row[0]: float(row[1] or 0.0) for row in self.db.execute(time_stmt.group_by(TimeEntry.project_id)).all()}
+
+        from sqlalchemy import case
+        task_counts_stmt = (
+            select(
+                Task.project_id,
+                func.count(Task.id).label("total"),
+                func.sum(case((Task.status == "COMPLETED", 1), else_=0)).label("completed")
+            )
+            .where(Task.is_active == True)
+            .group_by(Task.project_id)
+        )
+        task_counts_data = {row[0]: (row[1], row[2] or 0) for row in self.db.execute(task_counts_stmt).all()}
+
+        result = []
+        for p in projects:
+            actual = hours_by_project.get(p.id, 0.0)
+            est = float(p.estimated_hours or 0.0)
+            overrun = round(actual - est, 2)
+            overrun_pct = round((overrun / est * 100) if est > 0.0 else 0.0, 1)
+
+            tc, ctc = task_counts_data.get(p.id, (0, 0))
+
+            pm_name = None
+            if p.project_manager:
+                pm_name = f"{p.project_manager.first_name} {p.project_manager.last_name or ''}".strip()
+
+            result.append(ProjectListRow(
+                project_id=p.id,
+                project_code=p.project_code,
+                project_name=p.name,
+                client_name=p.client.name if p.client else None,
+                department_name=p.department.name if p.department else None,
+                project_manager_name=pm_name,
+                planned_hours=est,
+                actual_hours=actual,
+                overrun_hours=overrun,
+                overrun_percentage=overrun_pct,
+                status=p.status,
+                task_count=tc,
+                completed_task_count=ctc,
+                planned_end_date=p.planned_end_date
+            ))
+
+        result.sort(key=lambda x: x.overrun_hours, reverse=True)
+        return ExecutiveProjectListResponse(projects=result)
+
+    def get_task_summary(
+        self,
+        department_id: UUID | None = None,
+        team_id: UUID | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        user_ctx = None
+    ) -> ExecutiveTaskSummaryResponse:
+        scoped_project_ids = self._get_scoped_project_ids(user_ctx)
+
+        stmt = select(Task, Project.name.label("project_name")).join(Project, Task.project_id == Project.id).where(Task.is_active == True)
+        if scoped_project_ids is not None:
+            stmt = stmt.where(Task.project_id.in_(scoped_project_ids))
+        if department_id:
+            stmt = stmt.where(Project.department_id == department_id)
+        if team_id:
+            stmt = stmt.where(Task.team_id == team_id)
+
+        tasks_result = self.db.execute(stmt).all()
+        task_ids = [row[0].id for row in tasks_result]
+
+        if not task_ids:
+            return ExecutiveTaskSummaryResponse(tasks=[])
+
+        time_stmt = select(TimeEntry.task_id, func.sum(TimeEntry.hours_spent)).where(
+            TimeEntry.task_id.in_(task_ids),
+            TimeEntry.status != "REJECTED"
+        )
+        if from_date:
+            time_stmt = time_stmt.where(TimeEntry.date >= from_date)
+        if to_date:
+            time_stmt = time_stmt.where(TimeEntry.date <= to_date)
+
+        hours_by_task = {row[0]: float(row[1] or 0.0) for row in self.db.execute(time_stmt.group_by(TimeEntry.task_id)).all()}
+
+        assignee_map = {}
+        assignee_rows = self.db.execute(
+            select(TaskAssignment.task_id, Employee.first_name, Employee.last_name)
+            .join(Employee, TaskAssignment.employee_id == Employee.id)
+            .where(TaskAssignment.task_id.in_(task_ids))
+            .distinct(TaskAssignment.task_id)
+        ).all()
+        for a_row in assignee_rows:
+            assignee_map[a_row[0]] = f"{a_row[1]} {a_row[2] or ''}".strip()
+
+        result = []
+        for row in tasks_result:
+            t = row[0]
+            actual = hours_by_task.get(t.id, 0.0)
+            est = float(t.estimated_hours or 0.0)
+            overrun = round(actual - est, 2)
+
+            result.append(TaskSummaryRow(
+                task_id=t.id,
+                task_code=t.task_code,
+                title=t.title,
+                project_name=row[1],
+                assignee_name=assignee_map.get(t.id),
+                status=t.status,
+                priority=t.priority,
+                estimated_hours=est,
+                actual_hours=actual,
+                overrun_hours=overrun,
+                planned_delivery_date=t.planned_delivery_date
+            ))
+
+        result.sort(key=lambda x: x.overrun_hours, reverse=True)
+        return ExecutiveTaskSummaryResponse(tasks=result)
+
 

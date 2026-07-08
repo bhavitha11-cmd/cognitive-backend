@@ -320,3 +320,147 @@ class PlanningService:
         for t in sorted_tasks:
             self.db.refresh(t)
         return self.get_gantt_data(project_id)
+
+    # ── Employee Load Chart ────────────────────────────────────────────────
+
+    def get_employee_load_chart(
+        self,
+        requesting_employee_id: uuid.UUID,
+        from_date: date,
+        to_date: date,
+        department_id: uuid.UUID | None = None,
+        team_id: uuid.UUID | None = None,
+    ) -> list[dict]:
+        """
+        Returns a hierarchical list of employees with their active task assignments
+        formatted for a Gantt load chart. Respects reporting hierarchy visibility.
+        """
+        from app.models.employee import Employee
+        from app.models.task import Task
+        from app.models.project import Project
+        from app.services.organization_hierarchy_service import OrganizationHierarchyService
+
+        # Resolve visible employee IDs based on hierarchy
+        hier_svc = OrganizationHierarchyService(self.db)
+        visible_ids = hier_svc.get_visible_employee_ids(requesting_employee_id)
+
+        # Load visible employees with their details
+        emp_query = (
+            select(Employee)
+            .where(Employee.id.in_(visible_ids))
+            .where(Employee.is_active == True)
+        )
+        if department_id:
+            emp_query = emp_query.where(Employee.department_id == department_id)
+
+        employees = self.db.scalars(emp_query).all()
+
+        if team_id:
+            from app.models.team_member import TeamMember
+            team_emp_ids = set(
+                row[0]
+                for row in self.db.execute(
+                    select(TeamMember.employee_id).where(TeamMember.team_id == team_id)
+                ).all()
+            )
+            employees = [e for e in employees if e.id in team_emp_ids]
+
+        emp_ids = [e.id for e in employees]
+        if not emp_ids:
+            return []
+
+        # Load all active assignments overlapping the date range
+        assignments = self.db.execute(
+            select(TaskAssignment, Task, Project)
+            .join(Task, Task.id == TaskAssignment.task_id)
+            .join(Project, Project.id == Task.project_id)
+            .where(TaskAssignment.employee_id.in_(emp_ids))
+            .where(Task.is_active == True)
+            .where(TaskAssignment.status != "CANCELLED")
+            .where(
+                (TaskAssignment.planned_end_date >= from_date) |
+                (Task.planned_end_date >= from_date) |
+                (Task.scheduled_end_date >= from_date)
+            )
+        ).all()
+
+        # Group assignments by employee id
+        emp_assignments: dict[uuid.UUID, list[dict]] = {e.id: [] for e in employees}
+        for assignment, task, project in assignments:
+            emp_id = assignment.employee_id
+            if emp_id not in emp_assignments:
+                continue
+            start = (
+                assignment.planned_start_date
+                or task.planned_start_date
+                or task.scheduled_start_date
+            )
+            end = (
+                assignment.planned_end_date
+                or task.planned_end_date
+                or task.scheduled_end_date
+            )
+            emp_assignments[emp_id].append({
+                "task_id": str(task.id),
+                "task_code": task.task_code,
+                "task_title": task.title,
+                "project_id": str(project.id),
+                "project_name": project.name,
+                "status": task.status,
+                "priority": task.priority,
+                "progress": float(task.progress),
+                "assigned_hours": float(assignment.assigned_hours),
+                "estimated_hours": float(task.estimated_hours),
+                "actual_hours": float(task.actual_hours),
+                "start_date": start.isoformat() if start else None,
+                "end_date": end.isoformat() if end else None,
+            })
+
+        # Build result rows
+        emp_map = {e.id: e for e in employees}
+        rows = []
+        for emp_id in emp_ids:
+            emp = emp_map.get(emp_id)
+            if not emp:
+                continue
+            tasks_list = emp_assignments.get(emp_id, [])
+            # "loaded until" = max end_date across active assignments
+            end_dates = [
+                t["end_date"] for t in tasks_list
+                if t["end_date"] and t["status"] not in ("COMPLETED", "CANCELLED")
+            ]
+            loaded_until = max(end_dates) if end_dates else None
+
+            # Compute load_status based on task count and hours
+            active_tasks = [t for t in tasks_list if t["status"] not in ("COMPLETED", "CANCELLED")]
+            total_assigned = sum(t["assigned_hours"] for t in active_tasks)
+            if total_assigned == 0:
+                load_status = "AVAILABLE"
+            elif total_assigned > 48:
+                load_status = "OVERLOADED"
+            elif total_assigned >= 32:
+                load_status = "OPTIMAL"
+            else:
+                load_status = "UNDERLOADED"
+
+            # Hierarchy info
+            parent_id = hier_svc._ensure_cache() or None
+            mgr_id = hier_svc.cache.get_parent(emp_id)
+
+            rows.append({
+                "employee_id": str(emp_id),
+                "employee_code": emp.employee_code,
+                "employee_name": f"{emp.first_name} {emp.last_name}",
+                "display_name": emp.display_name or f"{emp.first_name} {emp.last_name}",
+                "profile_photo_url": emp.profile_photo_url,
+                "designation": emp.designation.name if emp.designation else None,
+                "department": emp.department.name if emp.department else None,
+                "reporting_manager_id": str(mgr_id) if mgr_id else None,
+                "loaded_until": loaded_until,
+                "load_status": load_status,
+                "total_assigned_hours": round(total_assigned, 2),
+                "active_task_count": len(active_tasks),
+                "tasks": tasks_list,
+            })
+
+        return rows

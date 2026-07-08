@@ -66,77 +66,70 @@ def get_current_user(
     return user_id
 
 
-def require_permission(module: str, action: str):
+def require_permission(module_or_feature: str, action: str):
     """
-    Return a FastAPI dependency that enforces RBAC.
-    action must be one of: view, create, edit, activate
+    Return a FastAPI dependency that enforces RBAC using the Authorization Engine.
+
+    Supports BOTH legacy module names (e.g. "Settings") and new feature keys
+    (e.g. "roles", "employees"). The engine uses the new scope-based permission
+    model via RolePermission.feature_id.
+
+    Backward-compatible: if a legacy module name is passed, it is mapped to a
+    feature_key automatically.
     """
-    def _check_role_super_admin(db: Session, user_uuid: UUID) -> bool:
-        """Direct query to check if user has a super-admin role code."""
-        from app.models.employee_role import EmployeeRole
-        from app.models.role import Role
-        stmt = (
-            select(Role.role_code)
-            .join(EmployeeRole, EmployeeRole.role_id == Role.id)
-            .where(EmployeeRole.employee_id == user_uuid)
-            .where(EmployeeRole.is_active == True)
-            .where(Role.is_active == True)
-        )
-        role_codes = [row[0] for row in db.execute(stmt).all()]
-        return any(code in SUPER_ADMIN_CODES for code in role_codes)
+    # Legacy module name → feature key mapping
+    LEGACY_MODULE_MAP = {
+        "HR": "employees",
+        "Clients": "clients",
+        "Finance": "settings",
+        "Projects": "projects",
+        "Inventory": "settings",
+        "Settings": "settings",
+        "Reports": "reports",
+        "Timesheets": "work_center",
+        "Tasks": "tasks",
+        "Attendance": "attendance",
+        "Leave": "my_leaves",
+        "Analytics": "advanced_dashboard",
+        "Holiday": "calendar",
+        "Calendar": "calendar",
+        "CompanyEvent": "calendar",
+        "Dashboard": "my_dashboard",
+        "CalendarSettings": "calendar_configuration",
+        "TaskTemplate": "task_title_library",
+        "Productivity": "work_center",
+    }
+
+    # Normalize the module/feature to a feature key
+    feature_key = LEGACY_MODULE_MAP.get(module_or_feature, module_or_feature)
+
+    # Normalize legacy action names to new action names
+    ACTION_MAP = {
+        "view": "view",
+        "create": "create",
+        "edit": "update",
+        "activate": "delete",
+    }
+    normalized_action = ACTION_MAP.get(action, action)
 
     def checker(
         current_user_id: str = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> str:
-        from app.models.employee import Employee
-        from app.models.employee_role import EmployeeRole
-        from app.models.role import Role
+        from app.services.auth_engine_service import AuthorizationEngine
 
         try:
             user_uuid = UUID(current_user_id)
         except ValueError:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-        employee = db.scalars(
-            select(Employee)
-            .options(
-                joinedload(Employee.employee_roles)
-                .joinedload(EmployeeRole.role)
-                .joinedload(Role.permissions)
-            )
-            .where(Employee.id == user_uuid)
-        ).unique().first()
-
-        if not employee or not employee.is_active:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-
-        # Super-admin bypass - check via relationship first, then fallback to direct query
-        is_super_admin = False
-        for er in employee.employee_roles:
-            if er.is_active and er.role:
-                if er.role.role_code in SUPER_ADMIN_CODES or getattr(er.role, "is_super_admin", False):
-                    is_super_admin = True
-                    break
-
-        if not is_super_admin:
-            is_super_admin = _check_role_super_admin(db, user_uuid)
-
-        if is_super_admin:
+        engine = AuthorizationEngine(db)
+        if engine.has_permission(user_uuid, feature_key, normalized_action):
             return current_user_id
-
-        # Module-level permission check
-        action_field = f"can_{action}"
-        for er in employee.employee_roles:
-            if not er.is_active or not er.role or not er.role.is_active:
-                continue
-            for perm in er.role.permissions:
-                if perm.module_name == module and getattr(perm, action_field, False):
-                    return current_user_id
 
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"You don't have '{action}' permission on module '{module}'",
+            detail=f"You don't have '{action}' permission on '{module_or_feature}'",
         )
 
     return checker
@@ -148,67 +141,52 @@ def require_any_permission(*permission_specs: tuple[str, str]):
     Pass multiple tuple specs, e.g. ("HR", "view"), ("Projects", "view").
     Allows access if ANY of the permissions are held.
     """
-    def _check_role_super_admin(db: Session, user_uuid: UUID) -> bool:
-        from app.models.employee_role import EmployeeRole
-        from app.models.role import Role
-        stmt = (
-            select(Role.role_code)
-            .join(EmployeeRole, EmployeeRole.role_id == Role.id)
-            .where(EmployeeRole.employee_id == user_uuid)
-            .where(EmployeeRole.is_active == True)
-            .where(Role.is_active == True)
-        )
-        role_codes = [row[0] for row in db.execute(stmt).all()]
-        return any(code in SUPER_ADMIN_CODES for code in role_codes)
+    LEGACY_MODULE_MAP = {
+        "HR": "employees",
+        "Clients": "clients",
+        "Finance": "settings",
+        "Projects": "projects",
+        "Inventory": "settings",
+        "Settings": "settings",
+        "Reports": "reports",
+        "Timesheets": "work_center",
+        "Tasks": "tasks",
+        "Attendance": "attendance",
+        "Leave": "my_leaves",
+        "Analytics": "advanced_dashboard",
+        "Holiday": "calendar",
+        "Calendar": "calendar",
+        "CompanyEvent": "calendar",
+        "Dashboard": "my_dashboard",
+        "CalendarSettings": "calendar_configuration",
+        "TaskTemplate": "task_title_library",
+        "Productivity": "work_center",
+    }
+    ACTION_MAP = {
+        "view": "view",
+        "create": "create",
+        "edit": "update",
+        "activate": "delete",
+    }
 
     def checker(
         current_user_id: str = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> str:
-        from app.models.employee import Employee
-        from app.models.employee_role import EmployeeRole
-        from app.models.role import Role
+        from app.services.auth_engine_service import AuthorizationEngine
 
         try:
             user_uuid = UUID(current_user_id)
         except ValueError:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-        employee = db.scalars(
-            select(Employee)
-            .options(
-                joinedload(Employee.employee_roles)
-                .joinedload(EmployeeRole.role)
-                .joinedload(Role.permissions)
-            )
-            .where(Employee.id == user_uuid)
-        ).unique().first()
+        engine = AuthorizationEngine(db)
 
-        if not employee or not employee.is_active:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-
-        is_super_admin = False
-        for er in employee.employee_roles:
-            if er.is_active and er.role:
-                if er.role.role_code in SUPER_ADMIN_CODES or getattr(er.role, "is_super_admin", False):
-                    is_super_admin = True
-                    break
-
-        if not is_super_admin:
-            is_super_admin = _check_role_super_admin(db, user_uuid)
-
-        if is_super_admin:
-            return current_user_id
-
-        # Check all role permissions against all specs
-        for er in employee.employee_roles:
-            if not er.is_active or not er.role or not er.role.is_active:
-                continue
-            for perm in er.role.permissions:
-                for module, action in permission_specs:
-                    action_field = f"can_{action}"
-                    if perm.module_name == module and getattr(perm, action_field, False):
-                        return current_user_id
+        for module, action in permission_specs:
+            feature_key = LEGACY_MODULE_MAP.get(module, module)
+            normalized_action = ACTION_MAP.get(action, action)
+            if engine.has_permission(user_uuid, feature_key, normalized_action):
+                return current_user_id
 
         spec_str = ", ".join(f"'{m}:{a}'" for m, a in permission_specs)
         raise HTTPException(

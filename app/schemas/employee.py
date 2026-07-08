@@ -104,6 +104,17 @@ class EmployeeCreate(BaseModel):
     def validate_phones(cls, v):
         return _validate_phone(v)
 
+    @field_validator("emergency_contact_phone", mode="before")
+    @classmethod
+    def validate_emergency_phone(cls, v):
+        if v is None or v == "":
+            return v
+        import re
+        clean = re.sub(r"[\s\-]", "", v)
+        if not re.match(r"^\d{10}$", clean):
+            raise ValueError("Emergency contact phone must be exactly 10 digits")
+        return clean
+
 
 class EmployeeUpdate(BaseModel):
     first_name: str | None = Field(None, min_length=1, max_length=100)
@@ -165,6 +176,17 @@ class EmployeeUpdate(BaseModel):
     def validate_phones(cls, v):
         return _validate_phone(v)
 
+    @field_validator("emergency_contact_phone", mode="before")
+    @classmethod
+    def validate_emergency_phone(cls, v):
+        if v is None or v == "":
+            return v
+        import re
+        clean = re.sub(r"[\s\-]", "", v)
+        if not re.match(r"^\d{10}$", clean):
+            raise ValueError("Emergency contact phone must be exactly 10 digits")
+        return clean
+
 
 # ── response schemas ──────────────────────────────────────────────────────────
 
@@ -173,6 +195,8 @@ class EmployeeLookupItem(BaseModel):
     display_name: str
     employee_code: str
     department_id: uuid.UUID | None = None
+    role_ids: list[uuid.UUID] = []
+    team_id: uuid.UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

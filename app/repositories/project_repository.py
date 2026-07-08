@@ -90,6 +90,8 @@ class ProjectRepository(BaseRepository):
         from app.core.rbac import DataAccessLevel
         from app.models.task import Task
         from app.models.task_assignment import TaskAssignment
+        from app.models.team_member import TeamMember
+        from app.services.organization_hierarchy_service import OrganizationHierarchyService
 
         level = user_context.data_access_level
         uid = user_context.employee_id
@@ -97,37 +99,56 @@ class ProjectRepository(BaseRepository):
         if level == DataAccessLevel.FULL:
             return stmt  # No filter — sees everything
 
+        # Load subordinates (includes the user themselves + descendants)
+        hierarchy_svc = OrganizationHierarchyService(self.db)
+        subordinate_ids = hierarchy_svc.get_visible_employee_ids(uid)
+
+        # Team assignment visibility: projects that have active tasks assigned to user's or reports' teams
+        user_team_ids_stmt = select(TeamMember.team_id).where(
+            TeamMember.employee_id.in_(subordinate_ids),
+            TeamMember.left_at.is_(None),
+        )
+        project_by_team_subq = (
+            select(Task.project_id).distinct()
+            .where(
+                Task.team_id.in_(user_team_ids_stmt),
+                Task.is_active == True,
+            )
+        )
+
         if level == DataAccessLevel.MANAGED:
-            # Projects where user is PM or creator
+            # Projects where creator/PM is user/subordinate or team has project tasks
             return stmt.where(
                 or_(
-                    Project.project_manager_id == uid,
-                    Project.created_by == uid,
+                    Project.project_manager_id.in_(subordinate_ids),
+                    Project.created_by.in_(subordinate_ids),
+                    Project.id.in_(project_by_team_subq),
                 )
             )
 
         if level == DataAccessLevel.TEAM:
-            # Projects where user is PM, creator, or project member
+            # Projects where creator/PM/member is user/subordinate or team has project tasks
             member_subq = (
                 select(ProjectMember.project_id)
                 .where(
-                    ProjectMember.employee_id == uid,
+                    ProjectMember.employee_id.in_(subordinate_ids),
                     ProjectMember.left_at.is_(None),
                 )
             )
             return stmt.where(
                 or_(
-                    Project.project_manager_id == uid,
-                    Project.created_by == uid,
+                    Project.project_manager_id.in_(subordinate_ids),
+                    Project.created_by.in_(subordinate_ids),
                     Project.id.in_(member_subq),
+                    Project.id.in_(project_by_team_subq),
                 )
             )
 
-        # SELF — projects where user is PM, creator, a member, or has task assignments
+        # SELF — projects where user/subordinate is PM, creator, member, has task assignments, or team has project tasks
         member_subq = (
             select(ProjectMember.project_id)
             .where(
-                ProjectMember.employee_id == uid,
+                ProjectMember.employee_id.in_(subordinate_ids),
                 ProjectMember.left_at.is_(None),
             )
         )
@@ -135,17 +156,18 @@ class ProjectRepository(BaseRepository):
             select(Task.project_id).distinct()
             .join(TaskAssignment, TaskAssignment.task_id == Task.id)
             .where(
-                TaskAssignment.employee_id == uid,
+                TaskAssignment.employee_id.in_(subordinate_ids),
                 TaskAssignment.status != "CANCELLED",
                 Task.is_active == True,  # noqa: E712
             )
         )
         return stmt.where(
             or_(
-                Project.project_manager_id == uid,
-                Project.created_by == uid,
+                Project.project_manager_id.in_(subordinate_ids),
+                Project.created_by.in_(subordinate_ids),
                 Project.id.in_(member_subq),
                 Project.id.in_(assigned_project_subq),
+                Project.id.in_(project_by_team_subq),
             )
         )
 

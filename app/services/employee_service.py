@@ -193,15 +193,20 @@ class EmployeeService:
         return self._build_list_response(employee)
 
     def get_lookup(self) -> list[EmployeeLookupItem]:
-        rows = self.repo.get_lookup()
+        employees = self.repo.get_lookup()
         result = []
-        for r in rows:
-            display_name = r.display_name or f"{r.first_name} {r.last_name}".strip()
+        for e in employees:
+            display_name = e.display_name or f"{e.first_name} {e.last_name}".strip()
+            role_ids = [er.role_id for er in e.employee_roles if er.is_active]
+            active_assignment = next((ta for ta in e.team_assignments if ta.left_at is None), None)
+            team_id = active_assignment.team_id if active_assignment else None
             result.append(EmployeeLookupItem(
-                id=r.id,
+                id=e.id,
                 display_name=display_name,
-                employee_code=r.employee_code,
-                department_id=r.department_id,
+                employee_code=e.employee_code,
+                department_id=e.department_id,
+                role_ids=role_ids,
+                team_id=team_id
             ))
         return result
 
@@ -296,6 +301,9 @@ class EmployeeService:
             )
             self.db.commit()
             self.db.refresh(employee)
+            # Invalidate hierarchy cache on successful create
+            from app.core.hierarchy_cache import HierarchyCache
+            HierarchyCache.get_instance().invalidate()
         except Exception:
             self.db.rollback()
             raise
@@ -486,6 +494,9 @@ class EmployeeService:
                 new_value=log_new if log_new else None,
             )
             self.db.commit()
+            # Invalidate hierarchy cache on successful update
+            from app.core.hierarchy_cache import HierarchyCache
+            HierarchyCache.get_instance().invalidate()
         except Exception:
             self.db.rollback()
             raise
@@ -690,6 +701,8 @@ class EmployeeService:
                 performed_by=self.current_user_id,
                 old_value={"employee_code": employee.employee_code, "email": employee.email},
             )
+            from app.core.hierarchy_cache import HierarchyCache
+            HierarchyCache.get_instance().invalidate()
             return
         check = self.offboard_check(id)
         if not check.can_offboard:
@@ -709,6 +722,8 @@ class EmployeeService:
             old_value={"account_status": old_status},
             new_value={"account_status": "TERMINATED"},
         )
+        from app.core.hierarchy_cache import HierarchyCache
+        HierarchyCache.get_instance().invalidate()
 
     def get_role_history(self, employee_id: UUID) -> list[dict]:
         records = self.db.scalars(
@@ -761,38 +776,9 @@ class EmployeeService:
         return result
 
     def get_organization_tree(self) -> list[dict]:
-        employees = self.db.scalars(
-            select(Employee)
-            .options(
-                joinedload(Employee.department),
-            )
-            .where(Employee.is_active == True)
-        ).unique().all()
-
-        emp_map = {e.id: e for e in employees}
-        children_map: dict[UUID, list[Employee]] = {}
-        roots = []
-        for e in employees:
-            if e.reporting_manager_id and e.reporting_manager_id in emp_map:
-                children_map.setdefault(e.reporting_manager_id, []).append(e)
-            else:
-                roots.append(e)
-
-        def build_node(emp: Employee) -> dict:
-            node = {
-                "id": str(emp.id),
-                "label": f"{emp.first_name} {emp.last_name}",
-                "designation": emp.designation.name if emp.designation else None,
-                "department": emp.department.name if emp.department else None,
-                "status": emp.account_status,
-                "avatar": emp.profile_photo_url,
-                "children": [],
-            }
-            for child in children_map.get(emp.id, []):
-                node["children"].append(build_node(child))
-            return node
-
-        return [build_node(r) for r in roots]
+        from app.services.organization_hierarchy_service import OrganizationHierarchyService
+        hierarchy = OrganizationHierarchyService(self.db)
+        return hierarchy.get_organization_tree()
 
     # ---- Private: Validation Helpers ----
 
@@ -876,29 +862,11 @@ class EmployeeService:
             raise ValueError("Reporting manager must be an active employee")
 
     def _detect_circular_reporting(self, employee_id: UUID | None, new_manager_id: UUID) -> None:
-        """Check if setting new_manager_id as manager for employee_id would create a cycle.
-        Uses a PostgreSQL recursive CTE instead of N+1 queries for O(depth) performance."""
-        from sqlalchemy import text
-
         if not employee_id:
-            # Creating a new employee — no cycle possible yet
             return
-
-        # Walk UP from new_manager_id to see if we reach employee_id
-        result = self.db.execute(text("""
-            WITH RECURSIVE reporting_chain AS (
-                SELECT id, reporting_manager_id FROM employees WHERE id = :start_id
-                UNION ALL
-                SELECT e.id, e.reporting_manager_id
-                FROM employees e
-                INNER JOIN reporting_chain rc ON e.id = rc.reporting_manager_id
-                WHERE rc.reporting_manager_id IS NOT NULL
-            )
-            SELECT id FROM reporting_chain WHERE id = :check_id
-        """), {"start_id": str(new_manager_id), "check_id": str(employee_id)})
-
-        if result.fetchone() is not None:
-            raise ValueError("Circular reporting hierarchy detected")
+        from app.services.organization_hierarchy_service import OrganizationHierarchyService
+        hierarchy = OrganizationHierarchyService(self.db)
+        hierarchy.validate_reporting_change(employee_id, new_manager_id)
 
     def _validate_status_transition(self, old_status: str, new_status: str) -> None:
         old = old_status.upper()

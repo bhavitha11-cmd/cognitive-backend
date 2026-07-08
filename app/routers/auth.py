@@ -21,7 +21,7 @@ from app.models.employee import Employee
 from app.models.employee_role import EmployeeRole
 from app.models.role import Role
 from app.models.role_permission import RolePermission
-from app.schemas.auth import Token, UserMeResponse, PermissionDetail, LoginRequest
+from app.schemas.auth import Token, UserMeResponse, PermissionDetail, LoginRequest, FeaturePermissionDetail, ModulePermissionDetail
 from app.schemas.common import APIResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -52,6 +52,8 @@ def _load_employee_with_roles(db: Session, user_uuid: UUID) -> Employee | None:
             joinedload(Employee.employee_roles)
             .joinedload(EmployeeRole.role)
             .joinedload(Role.permissions)
+            .joinedload(RolePermission.feature),
+            joinedload(Employee.team_assignments)
         )
         .where(Employee.id == user_uuid)
     ).unique().first()
@@ -65,12 +67,104 @@ def _build_permissions(employee: Employee) -> tuple[list[str], list[str], dict]:
             role_codes.append(er.role.role_code)
             for p in er.role.permissions:
                 mod = p.module_name
+                if not mod:
+                    if p.feature:
+                        mod = p.feature.feature_key
+                    else:
+                        continue
                 if mod not in permissions_map:
                     permissions_map[mod] = {k: False for k in
                                             ("can_view", "can_create", "can_edit", "can_activate")}
                 for action in permissions_map[mod]:
                     permissions_map[mod][action] |= getattr(p, action)
     return roles, role_codes, permissions_map
+
+
+def _build_module_permissions(db, employee, is_super_admin: bool) -> list[ModulePermissionDetail]:
+    """Build scope-based module permissions for the frontend sidebar and permission UI."""
+    from app.models.module import Module
+    from app.models.feature import Feature
+    from app.core.permission_scope import PermissionScope
+
+    # Load all active modules with features
+    from sqlalchemy.orm import selectinload
+    modules = db.scalars(
+        select(Module)
+        .options(selectinload(Module.features))
+        .where(Module.is_active == True)
+        .order_by(Module.display_order)
+    ).unique().all()
+
+    # Gather the user's feature permissions across all roles
+    scope_map = {}  # feature_id -> {view_scope, create_scope, update_scope, delete_scope}
+    if is_super_admin:
+        # Super admins get ALL on everything
+        pass
+    else:
+        from app.core.permission_scope import PermissionScope as PS
+        priority = [PS.NONE.value, PS.OWNED.value, PS.ADDED.value, PS.ADDED_OWNED.value,
+                    PS.TEAM.value, PS.DEPARTMENT.value, PS.COMPANY.value, PS.ALL.value]
+
+        for er in employee.employee_roles:
+            if not er.is_active or not er.role or not er.role.is_active:
+                continue
+            for p in er.role.permissions:
+                if not p.feature_id:
+                    continue
+                fid = p.feature_id
+                if fid not in scope_map:
+                    scope_map[fid] = {
+                        "view_scope": PS.NONE.value,
+                        "create_scope": PS.NONE.value,
+                        "update_scope": PS.NONE.value,
+                        "delete_scope": PS.NONE.value,
+                    }
+                for action in ("view_scope", "create_scope", "update_scope", "delete_scope"):
+                    current = scope_map[fid][action]
+                    incoming = getattr(p, action, PS.NONE.value)
+                    if priority.index(incoming) > priority.index(current):
+                        scope_map[fid][action] = incoming
+
+    result = []
+    for mod in modules:
+        features = []
+        for feat in mod.features:
+            if not feat.is_active:
+                continue
+            if is_super_admin:
+                scopes = {
+                    "view_scope": PermissionScope.ALL.value,
+                    "create_scope": PermissionScope.ALL.value,
+                    "update_scope": PermissionScope.ALL.value,
+                    "delete_scope": PermissionScope.ALL.value,
+                }
+            else:
+                scopes = scope_map.get(feat.id, {
+                    "view_scope": PermissionScope.NONE.value,
+                    "create_scope": PermissionScope.NONE.value,
+                    "update_scope": PermissionScope.NONE.value,
+                    "delete_scope": PermissionScope.NONE.value,
+                })
+
+            features.append(FeaturePermissionDetail(
+                feature_key=feat.feature_key,
+                feature_name=feat.feature_name,
+                module_key=mod.module_key,
+                module_name=mod.module_name,
+                route=feat.route,
+                menu_visible=feat.menu_visible,
+                **scopes,
+            ))
+
+        result.append(ModulePermissionDetail(
+            module_key=mod.module_key,
+            module_name=mod.module_name,
+            icon=mod.icon,
+            display_order=mod.display_order,
+            features=features,
+        ))
+
+    return result
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
@@ -336,8 +430,10 @@ def get_me(
     from app.core.rbac import get_user_context
     user_ctx = get_user_context(db, current_user_id)
 
-    # Super-admin gets full access on all modules
-    if set(role_codes) & SUPER_ADMIN_CODES:
+    is_super_admin = bool(set(role_codes) & SUPER_ADMIN_CODES)
+
+    # Super-admin gets full access on all legacy modules
+    if is_super_admin:
         for mod in ["HR", "Clients", "Finance", "Projects",
                     "Inventory", "Settings", "Reports", "Timesheets", "Tasks"]:
             permissions_map[mod] = {k: True for k in
@@ -347,6 +443,12 @@ def get_me(
         PermissionDetail(module_name=mod, **perms)
         for mod, perms in permissions_map.items()
     ]
+
+    # Build scope-based module permissions for the new frontend
+    module_permissions = _build_module_permissions(db, employee, is_super_admin)
+
+    active_assignment = next((ta for ta in employee.team_assignments if ta.left_at is None), None)
+    team_id = active_assignment.team_id if active_assignment else None
 
     return APIResponse(
         success=True,
@@ -364,6 +466,9 @@ def get_me(
             role_codes=role_codes,
             data_access_level=user_ctx.data_access_level.value,
             permissions=permissions_list,
+            module_permissions=module_permissions,
+            department_id=employee.department_id,
+            team_id=team_id,
         ).model_dump(),
     )
 
