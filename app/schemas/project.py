@@ -17,7 +17,7 @@ class ProjectCreate(BaseModel):
     description: str | None = Field(None, max_length=5000)
     client_id: uuid.UUID
     project_manager_id: uuid.UUID | None = None
-    department_id: uuid.UUID
+    department_id: uuid.UUID | None = None
     status: str = "Yet To Start"
     priority: str = "MEDIUM"
     is_billable: bool = True
@@ -112,7 +112,7 @@ class ProjectResponse(BaseModel):
     client_name: str | None = None
     project_manager_id: uuid.UUID | None = None
     project_manager_name: str | None = None
-    department_id: uuid.UUID
+    department_id: uuid.UUID | None = None
     department_name: str | None = None
     department_code: str | None = None
     status: str

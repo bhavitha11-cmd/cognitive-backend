@@ -54,10 +54,10 @@ class Project(Base):
         ForeignKey("employees.id", ondelete="SET NULL"),
         nullable=True,
     )
-    department_id: Mapped[uuid.UUID] = mapped_column(
+    department_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("departments.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
 
     # Status / classification

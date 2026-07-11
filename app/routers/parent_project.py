@@ -172,10 +172,11 @@ def create_parent_project(
     if not client or not client.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected client not found or inactive.")
 
-    # Validate Department
-    dept = db.get(Department, body.department_id)
-    if not dept or not dept.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected department not found or inactive.")
+    # Validate Department if provided
+    if body.department_id:
+        dept = db.get(Department, body.department_id)
+        if not dept or not dept.is_active:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected department not found or inactive.")
 
     # Validate Project Manager
     if body.project_manager_id:

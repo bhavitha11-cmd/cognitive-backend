@@ -11,7 +11,7 @@ class ParentProjectCreate(BaseModel):
     description: str | None = Field(None, max_length=5000)
     client_id: uuid.UUID
     project_manager_id: uuid.UUID | None = None
-    department_id: uuid.UUID
+    department_id: uuid.UUID | None = None
     parts: List[ProjectCreate] = []
 
 
@@ -32,7 +32,7 @@ class ParentProjectResponse(BaseModel):
     client_name: str | None = None
     project_manager_id: uuid.UUID | None = None
     project_manager_name: str | None = None
-    department_id: uuid.UUID
+    department_id: uuid.UUID | None = None
     department_name: str | None = None
     department_code: str | None = None
     is_active: bool

@@ -152,13 +152,14 @@ class ProjectService:
         if not getattr(client, "is_active", True):
             raise ValueError(f"Client with id {data.client_id} is not active")
 
-        # Validate department exists and is active
-        from app.models.department import Department
-        dept = self.db.get(Department, data.department_id)
-        if not dept:
-            raise ValueError(f"Department with id {data.department_id} not found")
-        if not getattr(dept, "is_active", True):
-            raise ValueError(f"Department with id {data.department_id} is not active")
+        # Validate department exists and is active if provided
+        if data.department_id is not None:
+            from app.models.department import Department
+            dept = self.db.get(Department, data.department_id)
+            if not dept:
+                raise ValueError(f"Department with id {data.department_id} not found")
+            if not getattr(dept, "is_active", True):
+                raise ValueError(f"Department with id {data.department_id} is not active")
 
         # Validate project_code (mapped from part_number) uniqueness
         if self.repo.get_by_code(data.part_number):
@@ -232,16 +233,17 @@ class ProjectService:
 
         # Validate department if changed
         if "department_id" in update_data and update_data["department_id"] != project.department_id:
-            from app.models.department import Department
-            dept = self.db.get(Department, update_data["department_id"])
-            if not dept:
-                raise ValueError(f"Department with id {update_data['department_id']} not found")
-            if not getattr(dept, "is_active", True):
-                raise ValueError(f"Department with id {update_data['department_id']} is not active")
-            
-            task_count, _ = self._get_task_counts(id)
-            if task_count > 0:
-                raise ValueError("Cannot change the department of a project that has tasks created under it.")
+            if update_data["department_id"] is not None:
+                from app.models.department import Department
+                dept = self.db.get(Department, update_data["department_id"])
+                if not dept:
+                    raise ValueError(f"Department with id {update_data['department_id']} not found")
+                if not getattr(dept, "is_active", True):
+                    raise ValueError(f"Department with id {update_data['department_id']} is not active")
+                
+                task_count, _ = self._get_task_counts(id)
+                if task_count > 0:
+                    raise ValueError("Cannot change the department of a project that has tasks created under it.")
 
         # Validate client if changed
         if "client_id" in update_data:

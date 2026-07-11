@@ -772,4 +772,83 @@ def test_half_day_leave_lifecycle(db_session: Session, seed_data):
     assert balance.used == 1.0
 
 
+def test_part_creation_without_department(db_session: Session, seed_data):
+    from app.services.project_service import ProjectService
+    from app.services.task_service import TaskService
+    from app.schemas.project import ProjectCreate
+    from app.schemas.task import TaskCreate
+    from app.models.project import Project
+    from app.models.task import Task
+    from app.models.team import Team
+
+    emp = seed_data["employees"]["EMP"]
+    
+    # Seed a Client
+    from app.models.client import Client
+    client = Client(id=uuid.uuid4(), name="Test Client", client_code="TC", is_active=True)
+    db_session.add(client)
+    db_session.flush()
+
+    # 1. Create a Project (Part) without department_id
+    project_service = ProjectService(db_session, current_user_id=emp.id)
+    project_data = ProjectCreate(
+        part_number="PART-NODEP-123",
+        name="Package No Dep",
+        part_name="Part No Dep",
+        client_id=client.id,
+        department_id=None,
+        status="Yet To Start",
+        priority="MEDIUM",
+        estimated_hours=10.0
+    )
+    
+    proj_resp = project_service.create(project_data)
+    assert proj_resp.department_id is None
+    
+    # Verify it exists in DB with department_id as None
+    db_proj = db_session.get(Project, proj_resp.id)
+    assert db_proj is not None
+    assert db_proj.department_id is None
+
+    # 2. Get two teams belonging to different departments
+    from app.models.department import Department
+    dept1 = Department(id=uuid.uuid4(), name="CAD Dept", code="CAD", is_active=True)
+    dept2 = Department(id=uuid.uuid4(), name="CAM Dept", code="CAM", is_active=True)
+    db_session.add_all([dept1, dept2])
+    db_session.flush()
+
+    team_cad = Team(id=uuid.uuid4(), team_code="CAD", team_name="CAD Team", department_id=dept1.id, is_active=True)
+    team_cam = Team(id=uuid.uuid4(), team_code="CAM", team_name="CAM Team", department_id=dept2.id, is_active=True)
+    db_session.add_all([team_cad, team_cam])
+    db_session.flush()
+
+    # 3. Create a task under this project for CAD team
+    task_service = TaskService(db_session, current_user_id=emp.id)
+    task_data_cad = TaskCreate(
+        project_id=proj_resp.id,
+        task_code="T-001",
+        title="CAD modeling task",
+        team_id=team_cad.id,
+        status="NOT_STARTED",
+        priority="MEDIUM",
+        estimated_hours=4.0
+    )
+    task_cad_resp = task_service.create(task_data_cad)
+    assert task_cad_resp.team_id == team_cad.id
+
+    # 4. Create a task under this same project for CAM team (should also succeed)
+    task_data_cam = TaskCreate(
+        project_id=proj_resp.id,
+        task_code="T-002",
+        title="CAM programming task",
+        team_id=team_cam.id,
+        status="NOT_STARTED",
+        priority="MEDIUM",
+        estimated_hours=6.0
+    )
+    task_cam_resp = task_service.create(task_data_cam)
+    assert task_cam_resp.team_id == team_cam.id
+
+
+
 
