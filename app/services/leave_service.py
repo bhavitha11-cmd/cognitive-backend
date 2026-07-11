@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, delete
 from sqlalchemy.orm import Session
 
 from app.models.employee import Employee
@@ -135,6 +135,8 @@ def _build_request_response(req: LeaveRequest, db: Session | None = None) -> Lea
         hr_notes=req.hr_notes,
         approval_steps=steps_data if db else None,
         document_url=req.document_url,
+        is_half_day=req.is_half_day,
+        half_day_session=req.half_day_session,
     )
 
 
@@ -152,6 +154,59 @@ class LeaveService:
         from app.services.working_day_engine import WorkingDayEngine
 
         return WorkingDayEngine.count_working_days(start_date, end_date, db or self.db)
+
+    def _create_on_leave_attendance(self, req: LeaveRequest, actioned_by: UUID | None = None) -> None:
+        from app.models.attendance import Attendance
+        from app.services.working_day_engine import WorkingDayEngine
+
+        current = req.from_date
+        while current <= req.to_date:
+            if WorkingDayEngine.is_working_day(current, self.db):
+                existing = self.db.scalars(
+                    select(Attendance).where(
+                        Attendance.employee_id == req.employee_id,
+                        Attendance.date == current,
+                    )
+                ).first()
+
+                # Determine notes and status
+                status_str = "ON_LEAVE"
+                notes_prefix = "Approved leave request"
+                if req.is_half_day:
+                    session_name = "First Half" if req.half_day_session == "FIRST_HALF" else "Second Half"
+                    notes_prefix = f"Approved half-day leave ({session_name})"
+
+                if existing:
+                    if existing.notes and "Approved half-day leave" in existing.notes:
+                        existing.notes = f"{existing.notes} | {notes_prefix}: {req.reason or 'No reason provided'}"
+                    else:
+                        existing.notes = f"{notes_prefix}: {req.reason or 'No reason provided'}"
+                    existing.status = status_str
+                    existing.marked_by = actioned_by or self.current_user_id
+                    self.db.add(existing)
+                else:
+                    new_record = Attendance(
+                        employee_id=req.employee_id,
+                        date=current,
+                        status=status_str,
+                        marked_by=actioned_by or self.current_user_id,
+                        notes=f"{notes_prefix}: {req.reason or 'No reason provided'}",
+                    )
+                    self.db.add(new_record)
+            current += timedelta(days=1)
+        self.db.flush()
+
+    def _delete_on_leave_attendance(self, req: LeaveRequest) -> None:
+        from app.models.attendance import Attendance
+
+        self.db.execute(
+            delete(Attendance).where(
+                Attendance.employee_id == req.employee_id,
+                Attendance.date.between(req.from_date, req.to_date),
+                Attendance.status == "ON_LEAVE",
+            )
+        )
+        self.db.flush()
 
     # ── Leave Types ────────────────────────────────────────────────────────────
 
@@ -505,8 +560,11 @@ class LeaveService:
             if not data.document_url or not data.document_url.strip():
                 raise ValueError("Document upload is mandatory for extra leaves")
 
-        # Calculate total working days (excludes weekends)
-        total_days = float(self._count_working_days(data.from_date, data.to_date))
+        # Calculate total working days
+        if data.is_half_day:
+            total_days = 0.5
+        else:
+            total_days = float(self._count_working_days(data.from_date, data.to_date))
 
         year = data.from_date.year
 
@@ -543,18 +601,35 @@ class LeaveService:
             )
 
         # Check for overlapping PENDING or APPROVED requests
-        overlap = self.db.scalars(
+        overlap = None
+        existing_requests = self.db.scalars(
             select(LeaveRequest).where(
                 LeaveRequest.employee_id == emp_id,
                 LeaveRequest.status.in_(["PENDING", "APPROVED"]),
                 LeaveRequest.from_date <= data.to_date,
                 LeaveRequest.to_date >= data.from_date,
             )
-        ).first()
+        ).all()
+
+        for ext in existing_requests:
+            if data.is_half_day:
+                if not ext.is_half_day:
+                    overlap = ext
+                    break
+                elif ext.from_date == data.from_date and ext.half_day_session == data.half_day_session:
+                    overlap = ext
+                    break
+            else:
+                overlap = ext
+                break
+
         if overlap:
+            overlap_desc = f"{overlap.from_date}"
+            if overlap.is_half_day:
+                overlap_desc += f" ({overlap.half_day_session.replace('_', ' ').title()})"
             raise ValueError(
                 f"Leave request overlaps with an existing {overlap.status} request "
-                f"({overlap.from_date} to {overlap.to_date})."
+                f"({overlap_desc})."
             )
 
         req = LeaveRequest(
@@ -566,6 +641,8 @@ class LeaveService:
             reason=data.reason,
             document_url=data.document_url,
             status="PENDING",
+            is_half_day=data.is_half_day,
+            half_day_session=data.half_day_session,
         )
         try:
             self.db.add(req)
@@ -582,6 +659,8 @@ class LeaveService:
                 req.approved_at = datetime.now(timezone.utc)
                 # Recompute used balance
                 self._recompute_used(emp_id, lt.id, year)
+                # Create ON_LEAVE attendance records
+                self._create_on_leave_attendance(req)
                 # Trigger Task Continuity Engine
                 try:
                     from app.services.task_continuity_service import TaskContinuityService
@@ -651,20 +730,30 @@ class LeaveService:
         if req.employee_id != self.current_user_id:
             raise ValueError("You can only cancel your own leave requests")
 
-        if req.status != "PENDING":
+        if req.status not in ("PENDING", "APPROVED"):
             raise ValueError(
-                f"Only PENDING requests can be cancelled. Current status: {req.status}"
+                f"Only PENDING or APPROVED requests can be cancelled. Current status: {req.status}"
             )
 
+        old_status = req.status
         try:
             req.status = "CANCELLED"
+            
+            if old_status == "APPROVED":
+                # Delete corresponding ON_LEAVE attendance records
+                self._delete_on_leave_attendance(req)
+                
+                # Recompute used leaves
+                year = req.from_date.year
+                self._recompute_used(req.employee_id, req.leave_type_id, year)
+
             AuditService.log(
                 self.db,
                 "leave_request",
                 id,
                 "CANCEL",
                 performed_by=self.current_user_id,
-                old_value={"status": "PENDING"},
+                old_value={"status": old_status},
                 new_value={"status": "CANCELLED"},
             )
             self.db.commit()
@@ -749,6 +838,9 @@ class LeaveService:
                 # Recompute used balance (flush-only) — now inside the txn,
                 # before the single commit, so approval decrements the balance.
                 self._recompute_used(req.employee_id, req.leave_type_id, year)
+
+                # Create ON_LEAVE attendance records
+                self._create_on_leave_attendance(req)
 
                 # Trigger Task Continuity Engine (before commit).
                 from app.services.task_continuity_service import TaskContinuityService

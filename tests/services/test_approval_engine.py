@@ -203,18 +203,23 @@ def test_workflow_activation_validation(db_session: Session, seed_data):
         service.activate_workflow(wf.id)
 
     # Configure invalid steps (level gap: level 2 without level 1)
-    steps_data = [
-        {
-            "requester_role_id": role_emp.id,
-            "level": 2,
-            "approver_role_id": role_tl.id,
-            "resolution_scope": "REPORTING_HIERARCHY"
-        }
-    ]
-    service.set_workflow_steps(wf.id, steps_data)
+    # Direct database insertion to bypass level normalization and test gap validation
+    invalid_step = ApprovalWorkflowStep(
+        workflow_id=wf.id,
+        requester_role_id=role_emp.id,
+        level=2,
+        approver_role_id=role_tl.id,
+        resolution_scope="REPORTING_HIERARCHY"
+    )
+    db_session.add(invalid_step)
+    db_session.commit()
 
     with pytest.raises(ValueError, match="Gaps found in levels"):
         service.activate_workflow(wf.id)
+
+    # Clean up the invalid step
+    db_session.delete(invalid_step)
+    db_session.commit()
 
     # Configure valid steps
     steps_data = [
@@ -473,3 +478,298 @@ def test_extra_leave_validation_rules(db_session: Session, seed_data):
     resp = leave_service.apply_leave(leave_data_success, employee_id=emp.id)
     assert resp.status == "PENDING"
     assert resp.document_url == "/api/v1/leaves/document/test_doc.pdf"
+
+
+def test_leave_rejection_commits(db_session: Session, seed_data):
+    emp = seed_data["employees"]["EMP"]
+    tl = seed_data["employees"]["TL"]
+    lt = seed_data["leave_type"]
+
+    role_emp = seed_data["roles"]["EMP"]
+    role_tl = seed_data["roles"]["TL"]
+
+    approval_service = ApprovalService(db_session)
+    leave_service = LeaveService(db_session, current_user_id=emp.id)
+
+    # Create and Activate Workflow
+    wf = approval_service.create_workflow(name="Leave Workflow", module_type="LEAVE")
+    steps = [
+        {
+            "requester_role_id": role_emp.id,
+            "level": 1,
+            "approver_role_id": role_tl.id,
+            "resolution_scope": "REPORTING_HIERARCHY"
+        }
+    ]
+    approval_service.set_workflow_steps(wf.id, steps)
+    approval_service.activate_workflow(wf.id)
+
+    # Initialize leave balance
+    leave_service.initialize_balances(emp.id, year=2026)
+
+    # Apply for Leave
+    from app.schemas.leave import LeaveRequestCreate
+    leave_data = LeaveRequestCreate(
+        leave_type_id=lt.id,
+        from_date=date(2026, 7, 10),
+        to_date=date(2026, 7, 12),
+        reason="Vacation",
+        document_url="http://example.com/doc.pdf"
+    )
+    req_resp = leave_service.apply_leave(leave_data, employee_id=emp.id)
+    assert req_resp.status == "PENDING"
+
+    # Verify that ApprovalInstance steps were created
+    instances = db_session.scalars(
+        select(ApprovalInstance)
+        .where(ApprovalInstance.target_id == req_resp.id)
+    ).all()
+    assert len(instances) == 1
+
+    # Action Level 1 (Team Lead Rejects)
+    approval_service.submit_approval_action(
+        employee_id=tl.id,
+        instance_id=instances[0].id,
+        action="REJECTED",
+        comments="Rejected by TL"
+    )
+
+    # Assert that the changes were committed
+    db_session.expire_all()
+    req_obj = db_session.get(LeaveRequest, req_resp.id)
+    assert req_obj.status == "REJECTED"
+    assert req_obj.rejection_reason == "Rejected by TL"
+
+    inst_obj = db_session.get(ApprovalInstance, instances[0].id)
+    assert inst_obj.status == "REJECTED"
+
+
+def test_cancel_approved_leave(db_session: Session, seed_data):
+    from app.models.attendance import Attendance
+
+    emp = seed_data["employees"]["EMP"]
+    tl = seed_data["employees"]["TL"]
+    lt = seed_data["leave_type"]
+
+    role_emp = seed_data["roles"]["EMP"]
+    role_tl = seed_data["roles"]["TL"]
+
+    approval_service = ApprovalService(db_session)
+    leave_service = LeaveService(db_session, current_user_id=emp.id)
+
+    # Create and Activate Workflow
+    wf = approval_service.create_workflow(name="Leave Workflow", module_type="LEAVE")
+    steps = [
+        {
+            "requester_role_id": role_emp.id,
+            "level": 1,
+            "approver_role_id": role_tl.id,
+            "resolution_scope": "REPORTING_HIERARCHY"
+        }
+    ]
+    approval_service.set_workflow_steps(wf.id, steps)
+    approval_service.activate_workflow(wf.id)
+
+    # Initialize leave balance
+    leave_service.initialize_balances(emp.id, year=2026)
+
+    # Apply for Leave (July 10, 2026 is Friday) -> 1 working day (Friday July 10)
+    from app.schemas.leave import LeaveRequestCreate
+    leave_data = LeaveRequestCreate(
+        leave_type_id=lt.id,
+        from_date=date(2026, 7, 10),
+        to_date=date(2026, 7, 10),
+        reason="Vacation",
+        document_url="http://example.com/doc.pdf"
+    )
+    req_resp = leave_service.apply_leave(leave_data, employee_id=emp.id)
+    assert req_resp.status == "PENDING"
+    assert req_resp.total_days == 1.0
+
+    # Verify that ApprovalInstance steps were created
+    instances = db_session.scalars(
+        select(ApprovalInstance)
+        .where(ApprovalInstance.target_id == req_resp.id)
+    ).all()
+    assert len(instances) == 1
+
+    # Action Level 1 (Team Lead Approves)
+    approval_service.submit_approval_action(
+        employee_id=tl.id,
+        instance_id=instances[0].id,
+        action="APPROVED",
+        comments="Approved by TL"
+    )
+
+    db_session.expire_all()
+    req_obj = db_session.get(LeaveRequest, req_resp.id)
+    assert req_obj.status == "APPROVED"
+
+    # Verify that ON_LEAVE attendance was created for 2026-07-10
+    att_records = db_session.scalars(
+        select(Attendance).where(
+            Attendance.employee_id == emp.id,
+            Attendance.date == date(2026, 7, 10)
+        )
+    ).all()
+    assert len(att_records) == 1
+    assert att_records[0].status == "ON_LEAVE"
+
+    # Verify that no ON_LEAVE attendance was created for 2026-07-11 or 2026-07-12 (weekends)
+    att_sat = db_session.scalars(
+        select(Attendance).where(
+            Attendance.employee_id == emp.id,
+            Attendance.date == date(2026, 7, 11)
+        )
+    ).all()
+    assert len(att_sat) == 0
+
+    # Verify used balance is 1.0
+    from app.models.leave_balance import LeaveBalance
+    balance = db_session.scalars(
+        select(LeaveBalance).where(
+            LeaveBalance.employee_id == emp.id,
+            LeaveBalance.leave_type_id == lt.id,
+            LeaveBalance.year == 2026
+        )
+    ).first()
+    assert balance.used == 1.0
+
+    # Now Cancel the Approved Leave request
+    leave_service.cancel_leave(req_resp.id)
+
+    db_session.expire_all()
+    req_obj = db_session.get(LeaveRequest, req_resp.id)
+    assert req_obj.status == "CANCELLED"
+
+    # Verify that the ON_LEAVE attendance record is deleted
+    att_records_after = db_session.scalars(
+        select(Attendance).where(
+            Attendance.employee_id == emp.id,
+            Attendance.date == date(2026, 7, 10)
+        )
+    ).all()
+    assert len(att_records_after) == 0
+
+    # Verify used balance is restored to 0.0
+    balance_after = db_session.scalars(
+        select(LeaveBalance).where(
+            LeaveBalance.employee_id == emp.id,
+            LeaveBalance.leave_type_id == lt.id,
+            LeaveBalance.year == 2026
+        )
+    ).first()
+    assert balance_after.used == 0.0
+
+
+def test_half_day_leave_lifecycle(db_session: Session, seed_data):
+    from app.models.attendance import Attendance
+    from app.models.leave_balance import LeaveBalance
+
+    emp = seed_data["employees"]["EMP"]
+    tl = seed_data["employees"]["TL"]
+    lt = seed_data["leave_type"]
+
+    role_emp = seed_data["roles"]["EMP"]
+    role_tl = seed_data["roles"]["TL"]
+
+    approval_service = ApprovalService(db_session)
+    leave_service = LeaveService(db_session, current_user_id=emp.id)
+
+    # Create and Activate Workflow
+    wf = approval_service.create_workflow(name="Leave Workflow", module_type="LEAVE")
+    steps = [
+        {
+            "requester_role_id": role_emp.id,
+            "level": 1,
+            "approver_role_id": role_tl.id,
+            "resolution_scope": "REPORTING_HIERARCHY"
+        }
+    ]
+    approval_service.set_workflow_steps(wf.id, steps)
+    approval_service.activate_workflow(wf.id)
+
+    # Initialize leave balance
+    leave_service.initialize_balances(emp.id, year=2026)
+
+    # 1. Apply for First Half Day Leave on Friday July 10, 2026
+    from app.schemas.leave import LeaveRequestCreate
+    leave_fh = LeaveRequestCreate(
+        leave_type_id=lt.id,
+        from_date=date(2026, 7, 10),
+        to_date=date(2026, 7, 10),
+        reason="Dentist appointment",
+        is_half_day=True,
+        half_day_session="FIRST_HALF"
+    )
+    req_fh = leave_service.apply_leave(leave_fh, employee_id=emp.id)
+    assert req_fh.status == "PENDING"
+    assert req_fh.total_days == 0.5
+
+    # 2. Apply for Second Half Day Leave on same day (should succeed)
+    leave_sh = LeaveRequestCreate(
+        leave_type_id=lt.id,
+        from_date=date(2026, 7, 10),
+        to_date=date(2026, 7, 10),
+        reason="Family errand",
+        is_half_day=True,
+        half_day_session="SECOND_HALF"
+    )
+    req_sh = leave_service.apply_leave(leave_sh, employee_id=emp.id)
+    assert req_sh.status == "PENDING"
+    assert req_sh.total_days == 0.5
+
+    # 3. Try to apply for a Full Day Leave on the same day (should fail)
+    leave_fd = LeaveRequestCreate(
+        leave_type_id=lt.id,
+        from_date=date(2026, 7, 10),
+        to_date=date(2026, 7, 10),
+        reason="Vacation overlap test",
+        is_half_day=False
+    )
+    with pytest.raises(ValueError, match="overlaps with an existing PENDING request"):
+        leave_service.apply_leave(leave_fd, employee_id=emp.id)
+
+    # Verify that ApprovalInstance steps were created for both
+    inst_fh = db_session.scalars(select(ApprovalInstance).where(ApprovalInstance.target_id == req_fh.id)).first()
+    inst_sh = db_session.scalars(select(ApprovalInstance).where(ApprovalInstance.target_id == req_sh.id)).first()
+
+    # 4. Action Level 1 for First Half (Approve)
+    approval_service.submit_approval_action(
+        employee_id=tl.id,
+        instance_id=inst_fh.id,
+        action="APPROVED",
+        comments="Approved First Half"
+    )
+    db_session.expire_all()
+    req_fh_obj = db_session.get(LeaveRequest, req_fh.id)
+    assert req_fh_obj.status == "APPROVED"
+
+    # Verify ON_LEAVE attendance was created with "First Half" in notes
+    att_rec = db_session.scalars(select(Attendance).where(Attendance.employee_id == emp.id, Attendance.date == date(2026, 7, 10))).first()
+    assert att_rec is not None
+    assert att_rec.status == "ON_LEAVE"
+    assert "First Half" in att_rec.notes
+
+    # 5. Action Level 1 for Second Half (Approve)
+    approval_service.submit_approval_action(
+        employee_id=tl.id,
+        instance_id=inst_sh.id,
+        action="APPROVED",
+        comments="Approved Second Half"
+    )
+    db_session.expire_all()
+    req_sh_obj = db_session.get(LeaveRequest, req_sh.id)
+    assert req_sh_obj.status == "APPROVED"
+
+    # Verify both sessions are noted in the attendance record
+    db_session.refresh(att_rec)
+    assert "First Half" in att_rec.notes
+    assert "Second Half" in att_rec.notes
+
+    # Verify used balance is 1.0 (0.5 + 0.5)
+    balance = db_session.scalars(select(LeaveBalance).where(LeaveBalance.employee_id == emp.id, LeaveBalance.leave_type_id == lt.id, LeaveBalance.year == 2026)).first()
+    assert balance.used == 1.0
+
+
+

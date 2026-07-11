@@ -66,8 +66,23 @@ class ApprovalService:
             self.db.delete(s)
         self.db.flush()
 
-        steps = []
+        # Group steps by requester_role_id to auto-normalize levels
+        steps_by_role = {}
         for step in steps_data:
+            role_id = uuid.UUID(str(step["requester_role_id"]))
+            steps_by_role.setdefault(role_id, []).append(step)
+
+        # Re-assign sequential levels starting from 1 for each role
+        normalized_steps_data = []
+        for role_id, role_steps in steps_by_role.items():
+            # Sort by original level to preserve configured relative order
+            role_steps.sort(key=lambda s: s["level"])
+            for idx, step in enumerate(role_steps, start=1):
+                step["level"] = idx
+                normalized_steps_data.append(step)
+
+        steps = []
+        for step in normalized_steps_data:
             new_step = ApprovalWorkflowStep(
                 workflow_id=workflow_id,
                 requester_role_id=step["requester_role_id"],
@@ -452,42 +467,49 @@ class ApprovalService:
         instance.actioned_at = now
         instance.comments = comments
 
-        # Triggered by this action
-        if action == "REJECTED":
-            # Cancel all other steps for this target
-            self.db.execute(
-                ApprovalInstance.__table__.update()
-                .where(
-                    ApprovalInstance.target_id == instance.target_id,
-                    ApprovalInstance.module_type == instance.module_type,
-                    ApprovalInstance.status.in_(["PENDING", "DRAFT"]),
+        try:
+            # Triggered by this action
+            if action == "REJECTED":
+                # Cancel all other steps for this target
+                self.db.execute(
+                    ApprovalInstance.__table__.update()
+                    .where(
+                        ApprovalInstance.target_id == instance.target_id,
+                        ApprovalInstance.module_type == instance.module_type,
+                        ApprovalInstance.status.in_(["PENDING", "DRAFT"]),
+                    )
+                    .values(status="REJECTED")
                 )
-                .values(status="REJECTED")
-            )
-            self.db.flush()
-            self._update_target_status(instance.module_type, instance.target_id, "REJECTED", comments or "Rejected by approver.", employee_id)
-            return "REJECTED", comments or "Rejected by approver."
-
-        else:  # APPROVED
-            # Find next DRAFT step
-            next_step = self.db.scalars(
-                select(ApprovalInstance)
-                .where(
-                    ApprovalInstance.target_id == instance.target_id,
-                    ApprovalInstance.module_type == instance.module_type,
-                    ApprovalInstance.status == "DRAFT",
-                )
-                .order_by(ApprovalInstance.level)
-            ).first()
-
-            if next_step:
-                next_step.status = "PENDING"
                 self.db.flush()
-                return "PENDING", None
-            else:
-                # No more steps left! Overall request is approved.
-                self._update_target_status(instance.module_type, instance.target_id, "APPROVED", None, employee_id)
-                return "APPROVED", None
+                self._update_target_status(instance.module_type, instance.target_id, "REJECTED", comments or "Rejected by approver.", employee_id)
+                self.db.commit()
+                return "REJECTED", comments or "Rejected by approver."
+
+            else:  # APPROVED
+                # Find next DRAFT step
+                next_step = self.db.scalars(
+                    select(ApprovalInstance)
+                    .where(
+                        ApprovalInstance.target_id == instance.target_id,
+                        ApprovalInstance.module_type == instance.module_type,
+                        ApprovalInstance.status == "DRAFT",
+                    )
+                    .order_by(ApprovalInstance.level)
+                ).first()
+
+                if next_step:
+                    next_step.status = "PENDING"
+                    self.db.flush()
+                    self.db.commit()
+                    return "PENDING", None
+                else:
+                    # No more steps left! Overall request is approved.
+                    self._update_target_status(instance.module_type, instance.target_id, "APPROVED", None, employee_id)
+                    self.db.commit()
+                    return "APPROVED", None
+        except Exception:
+            self.db.rollback()
+            raise
 
     def _get_requester_id_for_target(self, module_type: str, target_id: uuid.UUID) -> uuid.UUID:
         """
@@ -516,6 +538,10 @@ class ApprovalService:
                     # Recompute used leaves
                     year = req.from_date.year
                     self._recompute_leave_used(req.employee_id, req.leave_type_id, year)
+                    # Create ON_LEAVE attendance records
+                    from app.services.leave_service import LeaveService
+                    leave_svc = LeaveService(self.db, actioned_by)
+                    leave_svc._create_on_leave_attendance(req, actioned_by)
                     # Trigger task continuity
                     try:
                         from app.services.task_continuity_service import TaskContinuityService

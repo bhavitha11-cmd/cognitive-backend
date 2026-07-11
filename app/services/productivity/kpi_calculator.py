@@ -111,7 +111,7 @@ class KPICalculator:
                 status = "success"
                 color = "#10B981"
         elif name == "Remaining Productive Time":
-            tooltip = f"Productive time remaining to target: {formatted}"
+            tooltip = f"Time remaining to target: {formatted}"
             if raw_seconds == 0:
                 status = "success"
                 color = "#10B981"
@@ -513,7 +513,7 @@ class KPICalculator:
 
         req_hours = float(rule.required_productive_hours)
         req_seconds = int(req_hours * 3600)
-        remaining = max(0, req_seconds - productive)
+        remaining = max(0, req_seconds - org)
 
         prod_pct = (productive / org * 100) if org > 0 else 0.0
         org_util = (org / presence * 100) if presence > 0 else 0.0
@@ -538,7 +538,7 @@ class KPICalculator:
                 "Idle Time", idle, formula="Organization - Productive"
             ),
             "remaining_productive_time": cls.make_kpi_object(
-                "Remaining Productive Time", remaining, formula="Required Hours - Productive"
+                "Remaining Productive Time", remaining, formula="Required Hours - Organization"
             ),
             "productivity_percentage": cls.make_kpi_object(
                 "Productivity %", 0, percentage_override=prod_pct, formula="Productive / Organization * 100"

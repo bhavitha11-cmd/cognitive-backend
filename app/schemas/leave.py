@@ -74,11 +74,18 @@ class LeaveRequestCreate(BaseModel):
     to_date: date
     reason: str | None = Field(None, max_length=1000)
     document_url: str | None = None
+    is_half_day: bool = False
+    half_day_session: Literal["FIRST_HALF", "SECOND_HALF"] | None = None
 
     @model_validator(mode="after")
     def check_dates(self) -> "LeaveRequestCreate":
         if self.from_date > self.to_date:
             raise ValueError("from_date must be on or before to_date")
+        if self.is_half_day:
+            if self.from_date != self.to_date:
+                raise ValueError("For half-day leaves, from_date and to_date must be the same date")
+            if not self.half_day_session:
+                raise ValueError("half_day_session is required when is_half_day is True")
         return self
 
 
@@ -112,5 +119,7 @@ class LeaveRequestResponse(BaseModel):
     hr_notes: str | None = None
     approval_steps: list[dict] | None = None
     document_url: str | None = None
+    is_half_day: bool
+    half_day_session: str | None = None
 
     model_config = ConfigDict(from_attributes=True)

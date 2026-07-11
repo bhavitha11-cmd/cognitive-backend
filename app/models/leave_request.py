@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text, func, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,6 +36,8 @@ class LeaveRequest(Base):
     from_date: Mapped[date] = mapped_column(Date, nullable=False)
     to_date: Mapped[date] = mapped_column(Date, nullable=False)
     total_days: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
+    is_half_day: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    half_day_session: Mapped[str | None] = mapped_column(String(20), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), default="PENDING", nullable=False

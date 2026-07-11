@@ -27,6 +27,11 @@ from app.schemas.dashboard_analytics import (
 TEST_PROJECT_ID = uuid4()
 
 class TestDashboardAnalyticsApi:
+    @pytest.fixture(autouse=True)
+    def mock_permissions(self):
+        with patch("app.services.auth_engine_service.AuthorizationEngine.has_permission", return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_executive_summary(self, async_client):
         with patch.object(ExecutiveDashboardService, "get_summary") as mock_svc:

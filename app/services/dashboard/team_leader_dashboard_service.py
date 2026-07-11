@@ -20,12 +20,19 @@ from app.schemas.dashboard_analytics import (
     TeamMemberAttendance
 )
 
+from app.core.rbac import UserContext, DataAccessLevel
+
 class TeamLeaderDashboardService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, user_ctx: UserContext | None = None):
         self.db = db
+        self.user_ctx = user_ctx
 
     def get_leader_team_ids(self, employee_id: UUID) -> list[UUID]:
         """Get all team IDs led by the employee (role_in_team is LEAD or LEADER)."""
+        if self.user_ctx and self.user_ctx.data_access_level == DataAccessLevel.FULL:
+            # CEO / Admin sees all active teams
+            return list(self.db.scalars(select(Team.id).where(Team.is_active == True)).all())
+
         stmt = (
             select(TeamMember.team_id)
             .where(

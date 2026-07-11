@@ -386,7 +386,7 @@ def get_team_lead_summary(
         except Exception:
             pass
 
-    svc = TeamLeaderDashboardService(db)
+    svc = TeamLeaderDashboardService(db, user_ctx=user_ctx)
     res = svc.get_summary(user_ctx.employee_id)
     data = res.model_dump(mode="json", by_alias=True)
     set_cache(key, json.dumps(data), ttl=30)
@@ -409,7 +409,7 @@ def get_team_lead_charts(
         except Exception:
             pass
 
-    svc = TeamLeaderDashboardService(db)
+    svc = TeamLeaderDashboardService(db, user_ctx=user_ctx)
     res = svc.get_charts(user_ctx.employee_id)
     data = res.model_dump(mode="json", by_alias=True)
     set_cache(key, json.dumps(data), ttl=30)
@@ -424,8 +424,8 @@ def get_team_lead_attendance(
     db: Session = Depends(get_db),
     user_ctx: UserContext = Depends(require_data_access)
 ):
-    # Live data â€” NEVER cached
-    svc = TeamLeaderDashboardService(db)
+    # Live data — NEVER cached
+    svc = TeamLeaderDashboardService(db, user_ctx=user_ctx)
     res = svc.get_attendance(user_ctx.employee_id)
     return APIResponse(
         success=True,
