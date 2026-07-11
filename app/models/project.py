@@ -97,6 +97,12 @@ class Project(Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    parent_project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("parent_projects.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("employees.id", ondelete="SET NULL"),
@@ -113,6 +119,9 @@ class Project(Base):
     )
 
     # Relationships
+    parent_project: Mapped["ParentProject | None"] = relationship(
+        "ParentProject", back_populates="parts", foreign_keys=[parent_project_id]
+    )
     client: Mapped["Client"] = relationship(
         "Client", foreign_keys=[client_id], back_populates="projects"
     )

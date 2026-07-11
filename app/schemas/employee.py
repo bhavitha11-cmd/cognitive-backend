@@ -197,6 +197,7 @@ class EmployeeLookupItem(BaseModel):
     department_id: uuid.UUID | None = None
     role_ids: list[uuid.UUID] = []
     team_id: uuid.UUID | None = None
+    reporting_manager_id: uuid.UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
@@ -387,3 +388,50 @@ def approve_or_reject_leave(
         message=f"Leave request {data.action.upper()} successfully",
         data={"request": req.model_dump()},
     )
+
+
+@router.post("/upload", response_model=APIResponse)
+def upload_leave_document(
+    file: UploadFile = File(...),
+):
+    import os
+    import shutil
+
+    # Ensure uploads directory exists
+    uploads_dir = os.path.join(os.getcwd(), "uploads", "leave_documents")
+    os.makedirs(uploads_dir, exist_ok=True)
+
+    file_id = uuid.uuid4()
+    extension = os.path.splitext(file.filename)[1]
+    filename = f"{file_id}{extension}"
+    filepath = os.path.join(uploads_dir, filename)
+
+    try:
+        with open(filepath, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save file: {str(e)}"
+        )
+
+    # Return download url
+    return APIResponse(
+        success=True,
+        message="Document uploaded successfully",
+        data={"url": f"/api/v1/leaves/document/{filename}"}
+    )
+
+
+@router.get("/document/{filename}")
+def get_leave_document(filename: str):
+    import os
+    uploads_dir = os.path.join(os.getcwd(), "uploads", "leave_documents")
+    filepath = os.path.join(uploads_dir, filename)
+
+    if not os.path.exists(filepath):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found"
+        )
+    return FileResponse(filepath)

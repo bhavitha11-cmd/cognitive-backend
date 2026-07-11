@@ -15,6 +15,8 @@ from app.schemas.attendance import (
     AttendanceRuleUpdate,
     MissedClockoutRequestCreate,
     MissedClockoutRequestReview,
+    MissedClockinRequestCreate,
+    MissedClockinRequestReview,
 )
 from app.schemas.common import APIResponse
 
@@ -364,6 +366,96 @@ def reject_missed_clockout_request(
         message="Request rejected.",
         data={"request": req.model_dump()},
     )
+
+
+@router.post("/missed-clockin-request", response_model=APIResponse)
+def submit_missed_clockin_request(
+    body: MissedClockinRequestCreate,
+    db: Session = Depends(get_db),
+    current_user_id: str = Depends(get_current_user),
+    service=Depends(_get_service),
+):
+    """Employee submits a request to log a missed clock-in for a past date."""
+    employee_id = _resolve_employee_id(current_user_id, db)
+    try:
+        req = service.submit_missed_clockin_request(employee_id, body)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Missed clock-in request submitted. Awaiting admin approval.",
+        data={"request": req.model_dump()},
+    )
+
+
+@router.get(
+    "/missed-clockin-requests",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Attendance", "view"))],
+)
+def list_missed_clockin_requests(
+    request_status: Optional[str] = Query(None, alias="status"),
+    employee_id: Optional[uuid.UUID] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=200),
+    service=Depends(_get_service),
+):
+    """Admin: list missed clock-in requests, optionally filtered by status or employee."""
+    requests = service.list_missed_clockin_requests(
+        status=request_status, employee_id=employee_id, skip=skip, limit=limit
+    )
+    return APIResponse(
+        success=True,
+        message="Missed clock-in requests retrieved",
+        data={"requests": [r.model_dump() for r in requests], "total": len(requests)},
+    )
+
+
+@router.post(
+    "/missed-clockin-requests/{request_id}/approve",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Attendance", "edit"))],
+)
+def approve_missed_clockin_request(
+    request_id: uuid.UUID,
+    body: MissedClockinRequestReview = MissedClockinRequestReview(),
+    service=Depends(_get_service),
+):
+    """Admin: approve a missed clock-in request and apply the clock-in to attendance."""
+    try:
+        req = service.approve_missed_clockin_request(request_id, review_notes=body.review_notes)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Request approved. Clock-in applied to attendance record.",
+        data={"request": req.model_dump()},
+    )
+
+
+@router.post(
+    "/missed-clockin-requests/{request_id}/reject",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("Attendance", "edit"))],
+)
+def reject_missed_clockin_request(
+    request_id: uuid.UUID,
+    body: MissedClockinRequestReview = MissedClockinRequestReview(),
+    service=Depends(_get_service),
+):
+    """Admin: reject a missed clock-in request."""
+    try:
+        req = service.reject_missed_clockin_request(request_id, review_notes=body.review_notes)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return APIResponse(
+        success=True,
+        message="Request rejected.",
+        data={"request": req.model_dump()},
+    )
+
+
+
 
 
 @router.post(

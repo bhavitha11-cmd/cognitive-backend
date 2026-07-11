@@ -77,12 +77,12 @@ def require_permission(module_or_feature: str, action: str):
     Backward-compatible: if a legacy module name is passed, it is mapped to a
     feature_key automatically.
     """
-    # Legacy module name → feature key mapping
     LEGACY_MODULE_MAP = {
         "HR": "employees",
         "Clients": "clients",
         "Finance": "settings",
         "Projects": "projects",
+        "Parts": "parts",
         "Inventory": "settings",
         "Settings": "settings",
         "Reports": "reports",

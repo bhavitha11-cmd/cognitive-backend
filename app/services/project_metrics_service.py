@@ -77,10 +77,19 @@ class ProjectMetricsService:
         new_progress         = cls._compute_progress(tasks)
         new_status           = cls._compute_status(tasks)
 
+        if tasks:
+            new_planned_start = cls._compute_planned_start(tasks)
+            new_planned_end   = cls._compute_planned_end(tasks)
+        else:
+            new_planned_start = project.planned_start_date
+            new_planned_end   = project.planned_end_date
+
         # ── 3. Capture old values for audit ─────────────────────────────────
         old_values = {
             "estimated_hours":  float(project.estimated_hours  or 0),
             "actual_hours":     float(project.actual_hours     or 0),
+            "planned_start_date": str(project.planned_start_date) if project.planned_start_date else None,
+            "planned_end_date":   str(project.planned_end_date)   if project.planned_end_date   else None,
             "actual_start_date": str(project.actual_start_date) if project.actual_start_date else None,
             "actual_end_date":   str(project.actual_end_date)   if project.actual_end_date   else None,
             "progress":          float(project.progress         or 0),
@@ -90,6 +99,8 @@ class ProjectMetricsService:
         new_values = {
             "estimated_hours":  float(new_estimated_hours),
             "actual_hours":     float(new_actual_hours),
+            "planned_start_date": str(new_planned_start) if new_planned_start else None,
+            "planned_end_date":   str(new_planned_end)   if new_planned_end   else None,
             "actual_start_date": str(new_actual_start) if new_actual_start else None,
             "actual_end_date":   str(new_actual_end)   if new_actual_end   else None,
             "progress":          new_progress,
@@ -99,12 +110,25 @@ class ProjectMetricsService:
         # ── 4. Persist ───────────────────────────────────────────────────────
         project.estimated_hours  = new_estimated_hours
         project.actual_hours     = new_actual_hours
+        project.planned_start_date = new_planned_start
+        project.planned_end_date  = new_planned_end
         project.actual_start_date = new_actual_start
         project.actual_end_date  = new_actual_end
         project.progress         = new_progress
         project.status           = new_status
 
         db.flush()  # write within the caller's transaction
+
+        # Recalculate parent project metrics if linked
+        if project.parent_project_id and isinstance(project.parent_project_id, (UUID, str)):
+            from app.services.parent_project_metrics_service import ParentProjectMetricsService
+            try:
+                ParentProjectMetricsService.recalculate(db, project.parent_project_id)
+            except Exception as exc:
+                logger.warning(
+                    "[ProjectMetrics] Recalculating parent project %s failed: %s",
+                    project.parent_project_id, exc, exc_info=True
+                )
 
         # ── 5. Audit log — only if anything changed ──────────────────────────
         changed = {k: v for k, v in new_values.items() if str(v) != str(old_values.get(k))}

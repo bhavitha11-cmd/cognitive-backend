@@ -38,6 +38,7 @@ def _build_leave_type_response(lt: LeaveType) -> LeaveTypeResponse:
         is_paid=lt.is_paid,
         is_carry_forward=lt.is_carry_forward,
         requires_approval=lt.requires_approval,
+        requires_document=lt.requires_document,
         is_active=lt.is_active,
         color=lt.color,
         description=lt.description,
@@ -77,7 +78,7 @@ def _build_balance_response(
     )
 
 
-def _build_request_response(req: LeaveRequest) -> LeaveRequestResponse:
+def _build_request_response(req: LeaveRequest, db: Session | None = None) -> LeaveRequestResponse:
     emp = req.employee
     lt = req.leave_type
 
@@ -86,6 +87,33 @@ def _build_request_response(req: LeaveRequest) -> LeaveRequestResponse:
     if emp:
         emp_name = f"{emp.first_name} {emp.last_name}"
         emp_code = emp.employee_code
+
+    steps_data = []
+    if db:
+        from app.models.approval import ApprovalInstance
+        from app.models.role import Role
+        from app.models.employee import Employee
+        instances = db.scalars(
+            select(ApprovalInstance)
+            .where(
+                ApprovalInstance.target_id == req.id,
+                ApprovalInstance.module_type == "LEAVE"
+            )
+            .order_by(ApprovalInstance.level)
+        ).all()
+        for inst in instances:
+            app_role = db.get(Role, inst.approver_role_id)
+            assigned_emp = db.get(Employee, inst.assigned_approver_id) if inst.assigned_approver_id else None
+            actioned_emp = db.get(Employee, inst.actioned_by_id) if inst.actioned_by_id else None
+            steps_data.append({
+                "id": str(inst.id),
+                "level": inst.level,
+                "status": inst.status,
+                "approver_role_name": app_role.name if app_role else None,
+                "assigned_approver_name": f"{assigned_emp.first_name} {assigned_emp.last_name}" if assigned_emp else None,
+                "actioned_by_name": f"{actioned_emp.first_name} {actioned_emp.last_name}" if actioned_emp else None,
+                "comments": inst.comments,
+            })
 
     return LeaveRequestResponse(
         id=req.id,
@@ -105,6 +133,8 @@ def _build_request_response(req: LeaveRequest) -> LeaveRequestResponse:
         approved_at=req.approved_at,
         rejection_reason=req.rejection_reason,
         hr_notes=req.hr_notes,
+        approval_steps=steps_data if db else None,
+        document_url=req.document_url,
     )
 
 
@@ -154,6 +184,7 @@ class LeaveService:
             is_carry_forward=data.is_carry_forward,
             max_carry_forward_days=data.max_carry_forward_days,
             requires_approval=data.requires_approval,
+            requires_document=data.requires_document,
             color=data.color,
             description=data.description,
         )
@@ -281,8 +312,18 @@ class LeaveService:
             for lt in active_types:
                 balance = self._ensure_balance_exists(employee_id, lt.id, year)
 
-                # Set total_allowed from leave type
-                balance.total_allowed = lt.days_per_year
+                # Set total_allowed with proration from leave type based on joining date
+                days_allowed = float(lt.days_per_year)
+                if employee.date_of_joining:
+                    joining_year = employee.date_of_joining.year
+                    if joining_year == year:
+                        joining_month = employee.date_of_joining.month
+                        remaining_months = 12 - joining_month + 1
+                        prorated = (days_allowed * remaining_months) / 12.0
+                        days_allowed = round(prorated * 2) / 2.0
+                    elif joining_year > year:
+                        days_allowed = 0.0
+                balance.total_allowed = days_allowed
 
                 # Carry forward from prior year if applicable
                 if lt.is_carry_forward:
@@ -413,7 +454,7 @@ class LeaveService:
             stmt.order_by(LeaveRequest.applied_at.desc()).offset(skip).limit(limit)
         ).all()
 
-        return [_build_request_response(r) for r in requests], total
+        return [_build_request_response(r, self.db) for r in requests], total
 
     def get_my_requests(
         self,
@@ -434,7 +475,7 @@ class LeaveService:
         req = self.db.get(LeaveRequest, id)
         if not req:
             raise ValueError(f"Leave request with id {id} not found")
-        return _build_request_response(req)
+        return _build_request_response(req, self.db)
 
     def apply_leave(
         self,
@@ -456,6 +497,13 @@ class LeaveService:
             raise ValueError(f"Leave type with id {data.leave_type_id} not found")
         if not lt.is_active:
             raise ValueError(f"Leave type '{lt.name}' is not active")
+
+        # Enforce Extra leaves validation (must have reason and document upload)
+        if lt.requires_document:
+            if not data.reason or not data.reason.strip():
+                raise ValueError("Reason is mandatory for extra leaves")
+            if not data.document_url or not data.document_url.strip():
+                raise ValueError("Document upload is mandatory for extra leaves")
 
         # Calculate total working days (excludes weekends)
         total_days = float(self._count_working_days(data.from_date, data.to_date))
@@ -516,11 +564,32 @@ class LeaveService:
             to_date=data.to_date,
             total_days=total_days,
             reason=data.reason,
+            document_url=data.document_url,
             status="PENDING",
         )
         try:
             self.db.add(req)
             self.db.flush()  # assign req.id before audit, still inside the txn
+
+            # Initialize Approval Flow
+            from app.services.approval_service import ApprovalService
+            approval_svc = ApprovalService(self.db, self.current_user_id)
+            flow_status = approval_svc.initialize_approval_flow("LEAVE", req.id, emp_id)
+
+            if flow_status == "APPROVED":
+                req.status = "APPROVED"
+                req.approved_by = self.current_user_id
+                req.approved_at = datetime.now(timezone.utc)
+                # Recompute used balance
+                self._recompute_used(emp_id, lt.id, year)
+                # Trigger Task Continuity Engine
+                try:
+                    from app.services.task_continuity_service import TaskContinuityService
+                    continuity_svc = TaskContinuityService(self.db, self.current_user_id)
+                    continuity_svc.detect_and_create_task_risks(emp_id, req)
+                except Exception:
+                    pass
+
             AuditService.log(
                 self.db,
                 "leave_request",
@@ -569,7 +638,7 @@ class LeaveService:
             )
             self.db.commit()
             self.db.refresh(req)
-            return _build_request_response(req)
+            return _build_request_response(req, self.db)
         except Exception:
             self.db.rollback()
             raise
@@ -600,7 +669,7 @@ class LeaveService:
             )
             self.db.commit()
             self.db.refresh(req)
-            return _build_request_response(req)
+            return _build_request_response(req, self.db)
         except Exception:
             self.db.rollback()
             raise
@@ -698,7 +767,7 @@ class LeaveService:
 
             self.db.commit()
             self.db.refresh(req)
-            return _build_request_response(req)
+            return _build_request_response(req, self.db)
         except Exception:
             self.db.rollback()
             raise

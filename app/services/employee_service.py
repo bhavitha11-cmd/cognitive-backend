@@ -206,7 +206,8 @@ class EmployeeService:
                 employee_code=e.employee_code,
                 department_id=e.department_id,
                 role_ids=role_ids,
-                team_id=team_id
+                team_id=team_id,
+                reporting_manager_id=e.reporting_manager_id
             ))
         return result
 

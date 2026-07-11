@@ -17,6 +17,7 @@ from app.schemas.employee import (
 from app.schemas.employee_role import EmployeeRoleCreate, EmployeeRoleResponse
 from app.schemas.team import TeamCreate, TeamUpdate, TeamResponse
 from app.schemas.team_member import TeamMemberCreate, TeamMemberUpdate, TeamMemberResponse
+from app.schemas.parent_project import ParentProjectCreate, ParentProjectUpdate, ParentProjectResponse
 
 __all__ = [
     "APIResponse",
@@ -45,4 +46,7 @@ __all__ = [
     "TeamMemberCreate",
     "TeamMemberUpdate",
     "TeamMemberResponse",
+    "ParentProjectCreate",
+    "ParentProjectUpdate",
+    "ParentProjectResponse",
 ]

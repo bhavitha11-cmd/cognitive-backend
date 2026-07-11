@@ -10,6 +10,7 @@ VALID_FEEDBACK_STATUSES = {"PENDING", "RECEIVED", "POSITIVE", "NEGATIVE", "NA"}
 
 
 class ProjectCreate(BaseModel):
+    parent_project_id: uuid.UUID | None = None
     part_number: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=3, max_length=500)
     part_name: str = Field(..., min_length=1, max_length=255)

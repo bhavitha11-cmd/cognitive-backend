@@ -20,12 +20,13 @@ from app.routers.audit import router as audit_router
 from app.routers.auth import router as auth_router
 from app.routers.client import router as client_router
 from app.routers.scope_of_work import router as scope_of_work_router
-from app.routers.project import router as project_router
+from app.routers.parent_project import router as project_router
 from app.routers.task import router as task_router
 from app.routers.part import router as part_router
 from app.routers.attendance import router as attendance_router
 from app.routers.time_entry import router as time_entry_router
 from app.routers.leave import router as leave_router
+from app.routers.approval import router as approval_router
 from app.routers.planning import router as planning_router
 from app.routers.analytics import router as analytics_router
 from app.routers.work_session import router as work_session_router
@@ -41,6 +42,7 @@ from app.routers.productivity import router as productivity_router
 from app.routers.dashboard_analytics import router as dashboard_analytics_router
 from app.routers.pending_schedule_review import router as schedule_review_router
 from app.routers.modules import router as modules_router
+from app.routers.email_configuration import router as email_configuration_router
 import app.core.redis
 from app.middleware.audit_context import set_audit_context
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -313,6 +315,7 @@ app.include_router(part_router, prefix="/api/v1")
 app.include_router(attendance_router, prefix="/api/v1")
 app.include_router(time_entry_router, prefix="/api/v1")
 app.include_router(leave_router, prefix="/api/v1")
+app.include_router(approval_router, prefix="/api/v1")
 app.include_router(planning_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(work_session_router, prefix="/api/v1")
@@ -320,6 +323,7 @@ app.include_router(employee_break_router, prefix="/api/v1")
 app.include_router(task_rework_router, prefix="/api/v1")
 app.include_router(holiday_router, prefix="/api/v1")
 app.include_router(calendar_settings_router, prefix="/api/v1")
+app.include_router(email_configuration_router, prefix="/api/v1")
 app.include_router(company_event_router, prefix="/api/v1")
 app.include_router(calendar_router, prefix="/api/v1")
 app.include_router(dashboard_widget_router, prefix="/api/v1")

@@ -49,6 +49,7 @@ MODULE_REGISTRY: list[tuple] = [
     ]),
     ("projects", "Projects", "FolderOutlinedIcon", 4, [
         ("projects", "Projects", "/projects", None, 1, True, True, False),
+        ("parts", "Parts", "/parts", None, 2, True, True, False),
     ]),
     ("tasks", "Tasks", "AssignmentOutlinedIcon", 5, [
         ("tasks", "Tasks", "/tasks", None, 1, True, True, False),
@@ -98,25 +99,34 @@ OLD_MODULE_TO_FEATURE: dict[str, str] = {
 
 def seed_modules_and_features(db: Session) -> None:
     """Seed the modules and features tables if they are empty or missing rows."""
-    existing_module_keys = set(
-        db.scalars(select(Module.module_key)).all()
+    existing_modules = {
+        m.module_key: m for m in db.scalars(select(Module)).all()
+    }
+    existing_feature_keys = set(
+        db.scalars(select(Feature.feature_key)).all()
     )
 
     for mod_key, mod_name, mod_icon, mod_order, features_list in MODULE_REGISTRY:
-        if mod_key in existing_module_keys:
-            continue
+        if mod_key not in existing_modules:
+            module = Module(
+                module_key=mod_key,
+                module_name=mod_name,
+                icon=mod_icon,
+                display_order=mod_order,
+            )
+            db.add(module)
+            db.flush()  # get module.id
+            existing_modules[mod_key] = module
+            logger.info(f"Created module '{mod_key}'")
+        else:
+            module = existing_modules[mod_key]
 
-        module = Module(
-            module_key=mod_key,
-            module_name=mod_name,
-            icon=mod_icon,
-            display_order=mod_order,
-        )
-        db.add(module)
-        db.flush()  # get module.id
-
+        features_created = 0
         for feat in features_list:
             feat_key, feat_name, route, icon, order, menu_vis, perm_en, is_sys = feat
+            if feat_key in existing_feature_keys:
+                continue
+
             feature = Feature(
                 module_id=module.id,
                 feature_key=feat_key,
@@ -129,8 +139,11 @@ def seed_modules_and_features(db: Session) -> None:
                 is_system=is_sys,
             )
             db.add(feature)
+            existing_feature_keys.add(feat_key)
+            features_created += 1
 
-        logger.info(f"Seeded module '{mod_key}' with {len(features_list)} features.")
+        if features_created > 0:
+            logger.info(f"Seeded module '{mod_key}' with {features_created} new features.")
 
     db.commit()
     logger.info("Module & Feature seeding complete.")

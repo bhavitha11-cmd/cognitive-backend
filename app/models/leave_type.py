@@ -31,6 +31,9 @@ class LeaveType(Base):
     requires_approval: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
+    requires_document: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     color: Mapped[str] = mapped_column(
         String(7), default="#3B82F6", nullable=False
     )

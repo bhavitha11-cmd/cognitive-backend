@@ -180,6 +180,7 @@ def set_role_feature_permissions(
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
 
+    feature_ids = {perm.feature_id for perm in body.permissions}
     # Load all features
     features = db.scalars(
         select(Feature)

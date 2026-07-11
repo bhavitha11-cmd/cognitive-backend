@@ -136,3 +136,32 @@ class MissedClockoutRequestResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ── Missed clock-in request schemas ──────────────────────────────────────────
+
+class MissedClockinRequestCreate(BaseModel):
+    attendance_date: date_type
+    requested_clock_in: datetime
+    reason: str = Field(..., min_length=5, max_length=500)
+
+
+class MissedClockinRequestReview(BaseModel):
+    review_notes: Optional[str] = Field(None, max_length=500)
+
+
+class MissedClockinRequestResponse(BaseModel):
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: Optional[str] = None
+    employee_code: Optional[str] = None
+    attendance_date: date_type
+    requested_clock_in: datetime
+    reason: str
+    status: str
+    reviewed_by: Optional[uuid.UUID] = None
+    reviewed_at: Optional[datetime] = None
+    review_notes: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

@@ -12,6 +12,7 @@ from app.models.attendance import Attendance
 from app.models.attendance_rule import AttendanceRule
 from app.models.employee import Employee
 from app.models.missed_clockout_request import MissedClockoutRequest
+from app.models.missed_clockin_request import MissedClockinRequest
 from app.schemas.attendance import (
     AttendanceMarkRequest,
     AttendanceResponse,
@@ -19,6 +20,8 @@ from app.schemas.attendance import (
     AttendanceRuleUpdate,
     MissedClockoutRequestCreate,
     MissedClockoutRequestResponse,
+    MissedClockinRequestCreate,
+    MissedClockinRequestResponse,
 )
 from app.services.audit_service import AuditService
 
@@ -867,3 +870,235 @@ class AttendanceService:
             raise
 
         return self._build_mcr_response(req)
+
+    # ── Missed clock-in request flow ─────────────────────────────────────────
+
+    def _build_micr_response(self, req: MissedClockinRequest) -> MissedClockinRequestResponse:
+        emp = req.employee
+        employee_name: str | None = None
+        employee_code: str | None = None
+        if emp:
+            parts = [emp.first_name or "", emp.last_name or ""]
+            employee_name = " ".join(p for p in parts if p).strip() or None
+            employee_code = emp.employee_code
+        return MissedClockinRequestResponse(
+            id=req.id,
+            employee_id=req.employee_id,
+            employee_name=employee_name,
+            employee_code=employee_code,
+            attendance_date=req.attendance_date,
+            requested_clock_in=req.requested_clock_in,
+            reason=req.reason,
+            status=req.status,
+            reviewed_by=req.reviewed_by,
+            reviewed_at=req.reviewed_at,
+            review_notes=req.review_notes,
+            created_at=req.created_at,
+        )
+
+    def submit_missed_clockin_request(
+        self, employee_id: uuid.UUID, data: MissedClockinRequestCreate
+    ) -> MissedClockinRequestResponse:
+        self._get_employee_or_raise(employee_id)
+
+        record = self.db.scalars(
+            select(Attendance).where(
+                Attendance.employee_id == employee_id,
+                Attendance.date == data.attendance_date,
+            )
+        ).first()
+
+        if record and record.clock_in is not None:
+            raise ValueError(f"A clock-in already exists for {data.attendance_date}.")
+
+        rci = data.requested_clock_in
+        if rci.tzinfo is None:
+            rci = rci.replace(tzinfo=timezone.utc)
+        if rci > _now_utc():
+            raise ValueError("Requested clock-in time cannot be in the future.")
+
+        if record and record.clock_out is not None:
+            co = record.clock_out
+            if co.tzinfo is None:
+                co = co.replace(tzinfo=timezone.utc)
+            if rci >= co:
+                raise ValueError("Requested clock-in time must be before your clock-out time.")
+
+        existing_pending = self.db.scalars(
+            select(MissedClockinRequest).where(
+                MissedClockinRequest.employee_id == employee_id,
+                MissedClockinRequest.attendance_date == data.attendance_date,
+                MissedClockinRequest.status == "PENDING",
+            )
+        ).first()
+        if existing_pending:
+            raise ValueError(
+                "You already have a pending missed clock-in request for this date."
+            )
+
+        req = MissedClockinRequest(
+            employee_id=employee_id,
+            attendance_date=data.attendance_date,
+            requested_clock_in=rci,
+            reason=data.reason,
+            status="PENDING",
+        )
+        self.db.add(req)
+        try:
+            self.db.flush()
+            self.db.refresh(req, attribute_names=["employee"])
+            AuditService.log(
+                self.db,
+                "missed_clockin_request",
+                req.id,
+                "CREATE",
+                performed_by=self.current_user_id,
+                new_value={
+                    "employee_id": str(employee_id),
+                    "attendance_date": str(data.attendance_date),
+                    "requested_clock_in": rci.isoformat(),
+                    "reason": data.reason,
+                },
+            )
+            self.db.commit()
+            self.db.refresh(req)
+            self.db.refresh(req, attribute_names=["employee"])
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return self._build_micr_response(req)
+
+    def list_missed_clockin_requests(
+        self,
+        status: str | None = None,
+        employee_id: uuid.UUID | None = None,
+        skip: int = 0,
+        limit: int = 200,
+    ) -> list[MissedClockinRequestResponse]:
+        skip = max(0, skip)
+        limit = max(1, min(limit, 200))
+        stmt = (
+            select(MissedClockinRequest)
+            .options(selectinload(MissedClockinRequest.employee))
+            .order_by(MissedClockinRequest.created_at.desc())
+        )
+        if status:
+            stmt = stmt.where(MissedClockinRequest.status == status)
+        if employee_id:
+            stmt = stmt.where(MissedClockinRequest.employee_id == employee_id)
+        stmt = stmt.offset(skip).limit(limit)
+        requests = self.db.scalars(stmt).all()
+        return [self._build_micr_response(r) for r in requests]
+
+    def approve_missed_clockin_request(
+        self,
+        request_id: uuid.UUID,
+        review_notes: str | None = None,
+    ) -> MissedClockinRequestResponse:
+        req = self.db.get(MissedClockinRequest, request_id)
+        if not req:
+            raise ValueError("Request not found.")
+        if req.status != "PENDING":
+            raise ValueError(f"Request is already {req.status}.")
+
+        if self.current_user_id is not None and req.employee_id == self.current_user_id:
+            raise ValueError("You cannot approve your own missed clock-in request.")
+
+        rule_obj = self.db.scalars(select(AttendanceRule)).first()
+        if not rule_obj:
+            rule_obj = AttendanceRule()
+            self.db.add(rule_obj)
+            self.db.flush()
+
+        attendance, is_new = self._get_or_create_record(req.employee_id, req.attendance_date)
+        
+        if not is_new and attendance.clock_in is not None:
+            raise ValueError("An attendance record with a clock-in already exists for this date.")
+
+        attendance.clock_in = req.requested_clock_in
+        attendance.notes = (
+            (attendance.notes + "\n" if attendance.notes else "")
+            + f"Clock-in approved by admin (missed clockin request #{str(req.id)[:8]})"
+        )
+        
+        if attendance.status in {"ABSENT", "ON_LEAVE", "HOLIDAY"} and not is_new:
+            attendance.status = "PRESENT"
+        elif is_new:
+            attendance.status = "PRESENT"
+
+        self._apply_late(attendance, rule_obj)
+        self._apply_hours(attendance, rule_obj)
+        self._apply_half_day_status(attendance, rule_obj)
+
+        now = _now_utc()
+        req.status = "APPROVED"
+        req.reviewed_by = self.current_user_id
+        req.reviewed_at = now
+        req.review_notes = review_notes
+
+        try:
+            self.db.flush()
+            self.db.refresh(req, attribute_names=["employee"])
+            AuditService.log(
+                self.db,
+                "missed_clockin_request",
+                req.id,
+                "APPROVE",
+                performed_by=self.current_user_id,
+                new_value={
+                    "employee_id": str(req.employee_id),
+                    "attendance_date": str(req.attendance_date),
+                    "approved_clock_in": req.requested_clock_in.isoformat(),
+                    "review_notes": review_notes,
+                },
+            )
+            self.db.commit()
+            self.db.refresh(req)
+            self.db.refresh(req, attribute_names=["employee"])
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return self._build_micr_response(req)
+
+    def reject_missed_clockin_request(
+        self,
+        request_id: uuid.UUID,
+        review_notes: str | None = None,
+    ) -> MissedClockinRequestResponse:
+        req = self.db.get(MissedClockinRequest, request_id)
+        if not req:
+            raise ValueError("Request not found.")
+        if req.status != "PENDING":
+            raise ValueError(f"Request is already {req.status}.")
+
+        now = _now_utc()
+        req.status = "REJECTED"
+        req.reviewed_by = self.current_user_id
+        req.reviewed_at = now
+        req.review_notes = review_notes
+
+        try:
+            self.db.flush()
+            self.db.refresh(req, attribute_names=["employee"])
+            AuditService.log(
+                self.db,
+                "missed_clockin_request",
+                req.id,
+                "REJECT",
+                performed_by=self.current_user_id,
+                new_value={
+                    "employee_id": str(req.employee_id),
+                    "attendance_date": str(req.attendance_date),
+                    "review_notes": review_notes,
+                },
+            )
+            self.db.commit()
+            self.db.refresh(req)
+            self.db.refresh(req, attribute_names=["employee"])
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return self._build_micr_response(req)
