@@ -46,6 +46,7 @@ class Employee(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     mobile_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     alternate_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)

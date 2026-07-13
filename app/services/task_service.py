@@ -642,6 +642,8 @@ class TaskService:
             progress=float(task.progress or 0),
             planned_start_date=task.planned_start_date,
             planned_end_date=task.planned_end_date,
+            actual_start_date=task.actual_start_date,
+            actual_end_date=task.actual_end_date,
             planned_delivery_date=task.planned_delivery_date,
             actual_delivery_date=task.actual_delivery_date,
             rework_count=task.rework_count or 0,

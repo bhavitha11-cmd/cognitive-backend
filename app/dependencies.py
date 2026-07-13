@@ -63,6 +63,11 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check token version for session invalidation
+    token_version = payload.get("token_version")
+    if token_version is None or token_version != employee.token_version:
+        raise credentials_exception
+
     return user_id
 
 

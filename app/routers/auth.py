@@ -219,8 +219,8 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     employee.last_login_at = datetime.now(timezone.utc)
     db.add(employee)
 
-    access_token = create_access_token(subject=employee.id)
-    refresh_token = create_refresh_token(subject=employee.id)
+    access_token = create_access_token(subject=employee.id, token_version=employee.token_version)
+    refresh_token = create_refresh_token(subject=employee.id, token_version=employee.token_version)
 
     db.commit()
 
@@ -282,6 +282,11 @@ def token_refresh(request: Request, body: RefreshRequest, db: Session = Depends(
     if not employee or not employee.is_active:
         raise credentials_exc
 
+    # Check token version on refresh token
+    token_version = payload.get("token_version")
+    if token_version is None or token_version != employee.token_version:
+        raise credentials_exc
+
     # Revoke the old refresh token (refresh token rotation)
     old_revoked = RevokedToken(
         jti=jti,
@@ -292,8 +297,8 @@ def token_refresh(request: Request, body: RefreshRequest, db: Session = Depends(
     db.flush()  # Persist revocation before issuing new tokens
 
     # Issue new access token and new refresh token (rotation)
-    new_access = create_access_token(subject=employee.id)
-    new_refresh = create_refresh_token(subject=employee.id)
+    new_access = create_access_token(subject=employee.id, token_version=employee.token_version)
+    new_refresh = create_refresh_token(subject=employee.id, token_version=employee.token_version)
 
     db.commit()
 
@@ -387,17 +392,12 @@ def change_password(
         )
 
     employee.password_hash = get_password_hash(body.new_password)
+    employee.token_version = (employee.token_version or 1) + 1
     db.add(employee)
 
-    # TODO(security): invalidate all existing sessions/tokens on password change.
-    # There is currently NO token-version / password_changed_at mechanism on the
-    # Employee model (verified: no such column exists) and JWTs are not tracked
-    # per-user, so access/refresh tokens issued before the change remain valid
-    # until they expire. Implementing this requires a schema/model change
-    # (e.g. an Employee.token_version column bumped here and checked in
-    # get_current_user, or a password_changed_at timestamp compared against the
-    # token `iat`), which is out of scope for this change. Until then, changing
-    # the password does NOT log out other active sessions.
+    # Invalidate all existing sessions/tokens on password change.
+    # Bumping employee.token_version guarantees that all previously issued
+    # access/refresh tokens will fail validation in get_current_user.
 
     from app.services.audit_service import AuditService
     AuditService.log(db, "employee", employee.id, "CHANGE_PASSWORD",

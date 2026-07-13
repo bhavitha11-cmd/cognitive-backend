@@ -109,3 +109,14 @@ def receive_time_entry_after_write(mapper, connection, target):
     delete_keys_by_pattern("erp:dashboard:team-leader:*")
     delete_keys_by_pattern(f"erp:dashboard:employee:{target.employee_id}:*")
     delete_keys_by_pattern("erp:dashboard:performance:rankings*")
+
+
+def check_redis_connectivity() -> bool:
+    """Test connection to the Redis server. Returns True if reachable, False otherwise."""
+    if not redis_client:
+        return False
+    try:
+        return bool(redis_client.ping())
+    except Exception as e:
+        logger.error(f"[Redis] Connectivity check failed: {e}")
+        return False

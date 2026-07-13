@@ -219,6 +219,18 @@ def on_startup():
                 logger.warning(f"[Security] Production CORS allows local origin: {origin}")
 
 
+    # Redis connectivity check
+    logger.info("[Redis] Checking connection to Redis...")
+    from app.core.redis import check_redis_connectivity
+    if not check_redis_connectivity():
+        if settings.ENVIRONMENT == "production":
+            logger.critical("[Redis] Connection failed! Redis is required in production.")
+            raise RuntimeError("Redis connection failed! Startup aborted.")
+        else:
+            logger.warning("[Redis] Connection failed! Caching will be disabled/degraded.")
+    else:
+        logger.info("[Redis] Connection established successfully!")
+
     logger.info("[Database] Connecting to database...")
     max_retries = 5
     retry_delay = 2
