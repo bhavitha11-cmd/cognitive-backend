@@ -447,6 +447,13 @@ class ProjectService:
             new_value={"project_id": str(project_id), "employee_id": str(employee_id), "role": role},
         )
 
+        try:
+            self._send_assignment_email(member, project)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to send member assignment email: {e}")
+
         return ProjectMemberResponse(
             id=member.id,
             project_id=member.project_id,
@@ -456,6 +463,69 @@ class ProjectService:
             role=member.role,
             allocation_pct=member.allocation_pct,
             joined_at=member.joined_at,
+        )
+
+    def _send_assignment_email(self, member, project) -> None:
+        tl_employee = self.db.get(Employee, self.current_user_id)
+        tl_email = tl_employee.email if (tl_employee and tl_employee.email) else None
+        tl_name = f"{tl_employee.first_name} {tl_employee.last_name}" if tl_employee else "Team Lead"
+
+        employee = member.employee
+        if not employee or not employee.email:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("Assigned employee has no email address. Skipping email notification.")
+            return
+
+        subject = f"Assigned to Part: {project.project_code} - {project.part_name or project.name}"
+        
+        # Build beautiful HTML body
+        html_content = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.6;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px; background-color: #ffffff;">
+                    <h2 style="color: #206bc4; margin-top: 0;">New Part Assignment</h2>
+                    <p>Hello {employee.first_name} {employee.last_name},</p>
+                    <p>You have been assigned to the following Part / Project in the ERP:</p>
+                    <hr style="border: 0; border-top: 1px solid #eeeeee; margin: 20px 0;" />
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr>
+                            <td style="padding: 6px 0; font-weight: bold; width: 150px;">Part Number:</td>
+                            <td style="padding: 6px 0;">{project.project_code}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; font-weight: bold;">Part Name:</td>
+                            <td style="padding: 6px 0;">{project.part_name or project.name}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; font-weight: bold;">Assigned Role:</td>
+                            <td style="padding: 6px 0;">{member.role}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; font-weight: bold;">Allocation:</td>
+                            <td style="padding: 6px 0;">{member.allocation_pct}%</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; font-weight: bold;">Assigned By:</td>
+                            <td style="padding: 6px 0;">{tl_name} ({tl_email or 'N/A'})</td>
+                        </tr>
+                    </table>
+                    <hr style="border: 0; border-top: 1px solid #eeeeee; margin: 20px 0;" />
+                    <p style="font-size: 0.9em; color: #666666;">
+                        Please log in to the ERP Portal to check your assigned parts, log hours, or view dashboard metrics.
+                    </p>
+                </div>
+            </body>
+        </html>
+        """
+        
+        from app.services.email_service import EmailService
+        EmailService.send_email_with_active_config(
+            db=self.db,
+            to_email=employee.email,
+            subject=subject,
+            html_content=html_content,
+            cc_email=tl_email
         )
 
     def remove_member(self, project_id: UUID, member_id: UUID, user_context=None) -> None:

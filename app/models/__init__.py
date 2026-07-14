@@ -55,6 +55,16 @@ from app.models.task_continuity import (
     ManagerDecision,
 )
 
+from app.models.ticket_category import TicketCategory
+from app.models.ticket_type import TicketType
+from app.models.ticket_priority import TicketPriority
+from app.models.ticket_status import TicketStatus
+from app.models.ticket_category_handler import TicketCategoryHandler
+from app.models.ticket import Ticket
+from app.models.ticket_attachment import TicketAttachment
+from app.models.ticket_comment import TicketComment
+from app.models.ticket_history import TicketHistory
+
 __all__ = [
     "Role",
     "RolePermission",
@@ -107,5 +117,14 @@ __all__ = [
     "ApprovalWorkflow",
     "ApprovalWorkflowStep",
     "ApprovalInstance",
+    "TicketCategory",
+    "TicketType",
+    "TicketPriority",
+    "TicketStatus",
+    "TicketCategoryHandler",
+    "Ticket",
+    "TicketAttachment",
+    "TicketComment",
+    "TicketHistory",
 ]
 

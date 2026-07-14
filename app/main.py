@@ -43,6 +43,7 @@ from app.routers.dashboard_analytics import router as dashboard_analytics_router
 from app.routers.pending_schedule_review import router as schedule_review_router
 from app.routers.modules import router as modules_router
 from app.routers.email_configuration import router as email_configuration_router
+from app.routers.ticket import router as ticket_router
 import app.core.redis
 from app.middleware.audit_context import set_audit_context
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -344,6 +345,7 @@ app.include_router(productivity_router, prefix="/api/v1")
 app.include_router(dashboard_analytics_router, prefix="/api/v1")
 app.include_router(schedule_review_router, prefix="/api/v1")
 app.include_router(modules_router, prefix="/api/v1")
+app.include_router(ticket_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["General"])

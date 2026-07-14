@@ -20,6 +20,7 @@ class EmailService:
         subject: str,
         html_content: str,
         text_content: str = None,
+        cc_email: str = None,
     ) -> bool:
         """
         Retrieves the active email configuration and sends an email.
@@ -35,7 +36,7 @@ class EmailService:
 
         try:
             return EmailService._send_email_via_config(
-                active_config, to_email, subject, html_content, text_content
+                active_config, to_email, subject, html_content, text_content, cc_email
             )
         except Exception as e:
             logger.error(f"Failed to send email via active config '{active_config.name}': {e}")
@@ -48,6 +49,7 @@ class EmailService:
         subject: str,
         html_content: str,
         text_content: str = None,
+        cc_email: str = None,
     ) -> bool:
         """
         Low-level email sending using the provided EmailConfiguration.
@@ -55,11 +57,11 @@ class EmailService:
         """
         if config.provider == "microsoft_graph":
             return EmailService._send_via_graph(
-                config, to_email, subject, html_content, text_content
+                config, to_email, subject, html_content, text_content, cc_email
             )
         elif config.provider == "smtp":
             return EmailService._send_via_smtp(
-                config, to_email, subject, html_content, text_content
+                config, to_email, subject, html_content, text_content, cc_email
             )
         else:
             raise ValueError(f"Unsupported email provider: {config.provider}")
@@ -71,6 +73,7 @@ class EmailService:
         subject: str,
         html_content: str,
         text_content: str = None,
+        cc_email: str = None,
     ) -> bool:
         """
         Sends email using Microsoft Graph API (OAuth2 Client Credentials Flow).
@@ -129,7 +132,16 @@ class EmailService:
             "saveToSentItems": "true",
         }
 
-        logger.info(f"Sending Microsoft Graph email to: {to_email} via {config.sender_email}")
+        if cc_email:
+            payload["message"]["ccRecipients"] = [
+                {
+                    "emailAddress": {
+                        "address": cc_email,
+                    }
+                }
+            ]
+
+        logger.info(f"Sending Microsoft Graph email to: {to_email} via {config.sender_email} (CC: {cc_email})")
         res = requests.post(send_mail_url, json=payload, headers=headers, timeout=15)
         
         # M365 Graph sendMail returns 202 Accepted on success
@@ -147,6 +159,7 @@ class EmailService:
         subject: str,
         html_content: str,
         text_content: str = None,
+        cc_email: str = None,
     ) -> bool:
         """
         Sends email using standard SMTP.
@@ -159,6 +172,8 @@ class EmailService:
         msg["Subject"] = subject
         msg["From"] = config.sender_email
         msg["To"] = to_email
+        if cc_email:
+            msg["Cc"] = cc_email
 
         if text_content:
             msg.attach(MIMEText(text_content, "plain", "utf-8"))
