@@ -4,7 +4,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from uuid import UUID
 
 from app.database.session import get_db
@@ -180,7 +180,12 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     query = (
         select(Employee)
         .options(joinedload(Employee.employee_roles).joinedload(EmployeeRole.role))
-        .where(Employee.username == login_data.username)
+        .where(
+            or_(
+                Employee.username == login_data.username,
+                Employee.email == login_data.username
+            )
+        )
     )
     employee = db.scalars(query).unique().first()
 
@@ -231,6 +236,7 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
+            "must_change_password": employee.must_change_password,
             "employee": {
                 "id": str(employee.id),
                 "employee_code": employee.employee_code,
@@ -391,6 +397,8 @@ def change_password(
             detail="New password must be different from current password",
         )
 
+    employee.must_change_password = False
+    employee.password_changed_at = datetime.now(timezone.utc)
     employee.password_hash = get_password_hash(body.new_password)
     employee.token_version = (employee.token_version or 1) + 1
     db.add(employee)
@@ -405,7 +413,19 @@ def change_password(
 
     db.commit()
 
-    return APIResponse(success=True, message="Password changed successfully")
+    # Generate new tokens with the new token version
+    new_access_token = create_access_token(subject=employee.id, token_version=employee.token_version)
+    new_refresh_token = create_refresh_token(subject=employee.id, token_version=employee.token_version)
+
+    return APIResponse(
+        success=True,
+        message="Password changed successfully",
+        data={
+            "access_token": new_access_token,
+            "refresh_token": new_refresh_token,
+            "token_type": "bearer",
+        },
+    )
 
 
 @router.get("/me", response_model=APIResponse)
@@ -462,6 +482,7 @@ def get_me(
             email=employee.email,
             username=employee.username,
             is_active=employee.is_active,
+            must_change_password=employee.must_change_password,
             roles=roles,
             role_codes=role_codes,
             data_access_level=user_ctx.data_access_level.value,

@@ -14,13 +14,31 @@ logger = logging.getLogger(__name__)
 
 class EmailService:
     @staticmethod
+    def _parse_emails(emails: str | list[str] | None) -> list[str]:
+        if not emails:
+            return []
+        if isinstance(emails, str):
+            emails_list = [emails]
+        else:
+            emails_list = list(emails)
+        
+        parsed = []
+        for item in emails_list:
+            # Split by comma or semicolon and strip whitespace
+            for part in item.replace(";", ",").split(","):
+                part_cleaned = part.strip()
+                if part_cleaned and part_cleaned not in parsed:
+                    parsed.append(part_cleaned)
+        return parsed
+
+    @staticmethod
     def send_email_with_active_config(
         db: Session,
-        to_email: str,
+        to_email: str | list[str],
         subject: str,
         html_content: str,
         text_content: str = None,
-        cc_email: str = None,
+        cc_email: str | list[str] = None,
     ) -> bool:
         """
         Retrieves the active email configuration and sends an email.
@@ -45,11 +63,11 @@ class EmailService:
     @staticmethod
     def _send_email_via_config(
         config: EmailConfiguration,
-        to_email: str,
+        to_email: str | list[str],
         subject: str,
         html_content: str,
         text_content: str = None,
-        cc_email: str = None,
+        cc_email: str | list[str] = None,
     ) -> bool:
         """
         Low-level email sending using the provided EmailConfiguration.
@@ -69,17 +87,24 @@ class EmailService:
     @staticmethod
     def _send_via_graph(
         config: EmailConfiguration,
-        to_email: str,
+        to_email: str | list[str],
         subject: str,
         html_content: str,
         text_content: str = None,
-        cc_email: str = None,
+        cc_email: str | list[str] = None,
     ) -> bool:
         """
         Sends email using Microsoft Graph API (OAuth2 Client Credentials Flow).
         """
         if not config.tenant_id or not config.client_id or not config.client_secret:
             raise ValueError("Microsoft Graph API credentials (Tenant ID, Client ID, Client Secret) are incomplete.")
+
+        # Parse multiple emails
+        actual_to = EmailService._parse_emails(to_email)
+        actual_cc = EmailService._parse_emails(cc_email)
+
+        if not actual_to:
+            raise ValueError("No recipient email address specified.")
 
         # 1. Decrypt Client Secret
         decrypted_secret = decrypt_value(config.client_secret)
@@ -124,24 +149,26 @@ class EmailService:
                 "toRecipients": [
                     {
                         "emailAddress": {
-                            "address": to_email,
+                            "address": email,
                         }
                     }
+                    for email in actual_to
                 ],
             },
             "saveToSentItems": "true",
         }
 
-        if cc_email:
+        if actual_cc:
             payload["message"]["ccRecipients"] = [
                 {
                     "emailAddress": {
-                        "address": cc_email,
+                        "address": email,
                     }
                 }
+                for email in actual_cc
             ]
 
-        logger.info(f"Sending Microsoft Graph email to: {to_email} via {config.sender_email} (CC: {cc_email})")
+        logger.info(f"Sending Microsoft Graph email to: {actual_to} via {config.sender_email} (CC: {actual_cc})")
         res = requests.post(send_mail_url, json=payload, headers=headers, timeout=15)
         
         # M365 Graph sendMail returns 202 Accepted on success
@@ -155,11 +182,11 @@ class EmailService:
     @staticmethod
     def _send_via_smtp(
         config: EmailConfiguration,
-        to_email: str,
+        to_email: str | list[str],
         subject: str,
         html_content: str,
         text_content: str = None,
-        cc_email: str = None,
+        cc_email: str | list[str] = None,
     ) -> bool:
         """
         Sends email using standard SMTP.
@@ -167,13 +194,20 @@ class EmailService:
         if not config.smtp_host or not config.smtp_port:
             raise ValueError("SMTP host or port is not configured.")
 
+        # Parse multiple emails
+        actual_to = EmailService._parse_emails(to_email)
+        actual_cc = EmailService._parse_emails(cc_email)
+
+        if not actual_to:
+            raise ValueError("No recipient email address specified.")
+
         # 1. Build MIME Message
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = config.sender_email
-        msg["To"] = to_email
-        if cc_email:
-            msg["Cc"] = cc_email
+        msg["To"] = ", ".join(actual_to)
+        if actual_cc:
+            msg["Cc"] = ", ".join(actual_cc)
 
         if text_content:
             msg.attach(MIMEText(text_content, "plain", "utf-8"))
@@ -200,7 +234,7 @@ class EmailService:
                 logger.info(f"Authenticating SMTP user: {config.smtp_username}")
                 server.login(config.smtp_username, decrypted_password)
                 
-            logger.info(f"Sending SMTP email to: {to_email}")
+            logger.info(f"Sending SMTP email to: {actual_to} (CC: {actual_cc})")
             server.send_message(msg)
             logger.info("SMTP email sent successfully!")
             return True

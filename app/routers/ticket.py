@@ -440,6 +440,7 @@ def get_handlers(
             "category_id": h.category_id,
             "employee_id": h.employee_id,
             "employee_name": emp_name,
+            "is_active": h.is_active,
             "created_at": h.created_at,
         })
 
@@ -474,12 +475,18 @@ def create_handler(
 
     existing = repo.get_handler_by_category_and_employee(payload.category_id, payload.employee_id)
     if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This handler configuration already exists",
-        )
+        if not existing.is_active:
+            existing.is_active = True
+            repo.save_ticket()
+            h = existing
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This handler configuration already exists",
+            )
+    else:
+        h = repo.create_handler(payload.category_id, payload.employee_id)
 
-    h = repo.create_handler(payload.category_id, payload.employee_id)
     emp_name = f"{emp.first_name} {emp.last_name}"
     
     return APIResponse(
@@ -491,9 +498,42 @@ def create_handler(
                 "category_id": h.category_id,
                 "employee_id": h.employee_id,
                 "employee_name": emp_name,
+                "is_active": h.is_active,
                 "created_at": h.created_at,
             }
         },
+    )
+
+@router.put(
+    "/settings/handlers/{id}",
+    response_model=APIResponse,
+    dependencies=[Depends(require_permission("ticket_settings", "edit"))],
+)
+def update_handler_status(
+    id: uuid.UUID,
+    is_active: bool = Query(True),
+    repo: TicketRepository = Depends(_get_repo),
+):
+    h = repo.get_handler_by_id(id)
+    if not h:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Handler configuration not found",
+        )
+    h.is_active = is_active
+    repo.save_ticket()
+    return APIResponse(
+        success=True,
+        message="Handler status updated successfully",
+        data={
+            "handler": {
+                "id": h.id,
+                "category_id": h.category_id,
+                "employee_id": h.employee_id,
+                "is_active": h.is_active,
+                "updated_at": h.updated_at,
+            }
+        }
     )
 
 @router.delete(
@@ -511,10 +551,11 @@ def delete_handler(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Handler configuration not found",
         )
-    repo.delete_handler(h)
+    h.is_active = False
+    repo.save_ticket()
     return APIResponse(
         success=True,
-        message="Handler configuration deleted successfully",
+        message="Handler configuration deactivated successfully",
     )
 
 # ── 6. Ticket Operations ──────────────────────────────────────────────────────

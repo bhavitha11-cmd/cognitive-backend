@@ -735,6 +735,10 @@ class LeaveService:
                 f"Only PENDING or APPROVED requests can be cancelled. Current status: {req.status}"
             )
 
+        from datetime import date
+        if req.from_date < date.today():
+            raise ValueError("Cannot cancel a leave request after its start date has passed")
+
         old_status = req.status
         try:
             req.status = "CANCELLED"

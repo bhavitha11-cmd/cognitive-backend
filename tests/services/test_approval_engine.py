@@ -573,12 +573,12 @@ def test_cancel_approved_leave(db_session: Session, seed_data):
     # Initialize leave balance
     leave_service.initialize_balances(emp.id, year=2026)
 
-    # Apply for Leave (July 10, 2026 is Friday) -> 1 working day (Friday July 10)
+    # Apply for Leave (July 17, 2026 is Friday) -> 1 working day (Friday July 17)
     from app.schemas.leave import LeaveRequestCreate
     leave_data = LeaveRequestCreate(
         leave_type_id=lt.id,
-        from_date=date(2026, 7, 10),
-        to_date=date(2026, 7, 10),
+        from_date=date(2026, 7, 17),
+        to_date=date(2026, 7, 17),
         reason="Vacation",
         document_url="http://example.com/doc.pdf"
     )
@@ -605,21 +605,21 @@ def test_cancel_approved_leave(db_session: Session, seed_data):
     req_obj = db_session.get(LeaveRequest, req_resp.id)
     assert req_obj.status == "APPROVED"
 
-    # Verify that ON_LEAVE attendance was created for 2026-07-10
+    # Verify that ON_LEAVE attendance was created for 2026-07-17
     att_records = db_session.scalars(
         select(Attendance).where(
             Attendance.employee_id == emp.id,
-            Attendance.date == date(2026, 7, 10)
+            Attendance.date == date(2026, 7, 17)
         )
     ).all()
     assert len(att_records) == 1
     assert att_records[0].status == "ON_LEAVE"
 
-    # Verify that no ON_LEAVE attendance was created for 2026-07-11 or 2026-07-12 (weekends)
+    # Verify that no ON_LEAVE attendance was created for 2026-07-18 or 2026-07-19 (weekends)
     att_sat = db_session.scalars(
         select(Attendance).where(
             Attendance.employee_id == emp.id,
-            Attendance.date == date(2026, 7, 11)
+            Attendance.date == date(2026, 7, 18)
         )
     ).all()
     assert len(att_sat) == 0
@@ -646,7 +646,7 @@ def test_cancel_approved_leave(db_session: Session, seed_data):
     att_records_after = db_session.scalars(
         select(Attendance).where(
             Attendance.employee_id == emp.id,
-            Attendance.date == date(2026, 7, 10)
+            Attendance.date == date(2026, 7, 17)
         )
     ).all()
     assert len(att_records_after) == 0
@@ -848,6 +848,53 @@ def test_part_creation_without_department(db_session: Session, seed_data):
     )
     task_cam_resp = task_service.create(task_data_cam)
     assert task_cam_resp.team_id == team_cam.id
+
+
+def test_cannot_cancel_past_leave(db_session: Session, seed_data):
+    from datetime import date, timedelta
+    from app.schemas.leave import LeaveRequestCreate
+    import pytest
+
+    emp = seed_data["employees"]["EMP"]
+    tl = seed_data["employees"]["TL"]
+    lt = seed_data["leave_type"]
+    role_emp = seed_data["roles"]["EMP"]
+    role_tl = seed_data["roles"]["TL"]
+
+    approval_service = ApprovalService(db_session)
+    leave_service = LeaveService(db_session, current_user_id=emp.id)
+
+    # Create and Activate Workflow
+    wf = approval_service.create_workflow(name="Leave Workflow", module_type="LEAVE")
+    steps = [
+        {
+            "requester_role_id": role_emp.id,
+            "level": 1,
+            "approver_role_id": role_tl.id,
+            "resolution_scope": "REPORTING_HIERARCHY"
+        }
+    ]
+    approval_service.set_workflow_steps(wf.id, steps)
+    approval_service.activate_workflow(wf.id)
+
+    # Initialize leave balance
+    leave_service.initialize_balances(emp.id, year=2026)
+
+    # Apply for Leave yesterday
+    yesterday = date.today() - timedelta(days=1)
+    leave_data = LeaveRequestCreate(
+        leave_type_id=lt.id,
+        from_date=yesterday,
+        to_date=yesterday,
+        reason="Sick",
+        document_url=None
+    )
+    req_resp = leave_service.apply_leave(leave_data, employee_id=emp.id)
+    assert req_resp.status == "PENDING"
+
+    # Attempting to cancel should raise ValueError
+    with pytest.raises(ValueError, match="Cannot cancel a leave request after its start date has passed"):
+        leave_service.cancel_leave(req_resp.id)
 
 
 

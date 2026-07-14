@@ -1,7 +1,7 @@
 from uuid import UUID
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -15,6 +15,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
 
 
 def get_current_user(
+    request: Request = None,
     db: Session = Depends(get_db),
     token: str = Depends(oauth2_scheme),
 ) -> str:
@@ -67,6 +68,19 @@ def get_current_user(
     token_version = payload.get("token_version")
     if token_version is None or token_version != employee.token_version:
         raise credentials_exception
+
+    # Enforce must_change_password restriction
+    if employee.must_change_password:
+        allowed_paths = {
+            "/api/v1/auth/change-password",
+            "/api/v1/auth/me",
+            "/api/v1/auth/logout",
+        }
+        if request is not None and request.url.path not in allowed_paths:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Password change required",
+            )
 
     return user_id
 

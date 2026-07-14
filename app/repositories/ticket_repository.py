@@ -144,19 +144,25 @@ class TicketRepository(BaseRepository):
     def get_handler_by_id(self, id: uuid.UUID) -> TicketCategoryHandler | None:
         return self.db.get(TicketCategoryHandler, id)
 
-    def get_handlers_by_category(self, category_id: uuid.UUID) -> list[TicketCategoryHandler]:
+    def get_handlers_by_category(self, category_id: uuid.UUID, is_active: bool | None = None) -> list[TicketCategoryHandler]:
         stmt = select(TicketCategoryHandler).where(TicketCategoryHandler.category_id == category_id)
+        if is_active is not None:
+            stmt = stmt.where(TicketCategoryHandler.is_active == is_active)
         return list(self.db.scalars(stmt).all())
 
-    def get_handlers_by_employee(self, employee_id: uuid.UUID) -> list[TicketCategoryHandler]:
+    def get_handlers_by_employee(self, employee_id: uuid.UUID, is_active: bool | None = None) -> list[TicketCategoryHandler]:
         stmt = select(TicketCategoryHandler).where(TicketCategoryHandler.employee_id == employee_id)
+        if is_active is not None:
+            stmt = stmt.where(TicketCategoryHandler.is_active == is_active)
         return list(self.db.scalars(stmt).all())
 
-    def get_handler_by_category_and_employee(self, category_id: uuid.UUID, employee_id: uuid.UUID) -> TicketCategoryHandler | None:
+    def get_handler_by_category_and_employee(self, category_id: uuid.UUID, employee_id: uuid.UUID, is_active: bool | None = None) -> TicketCategoryHandler | None:
         stmt = select(TicketCategoryHandler).where(
             TicketCategoryHandler.category_id == category_id,
             TicketCategoryHandler.employee_id == employee_id
         )
+        if is_active is not None:
+            stmt = stmt.where(TicketCategoryHandler.is_active == is_active)
         return self.db.scalar(stmt)
 
     def get_all_handlers(self) -> list[TicketCategoryHandler]:

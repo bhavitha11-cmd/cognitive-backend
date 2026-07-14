@@ -109,7 +109,7 @@ class TicketService:
 
     def _notify_handlers(self, ticket: Ticket) -> None:
         # Get category handlers
-        handlers = self.repo.get_handlers_by_category(ticket.category_id)
+        handlers = self.repo.get_handlers_by_category(ticket.category_id, is_active=True)
         if not handlers:
             logger.warning(f"No handlers configured for ticket category '{ticket.category.name}'. Skipping email notification.")
             return
@@ -177,18 +177,23 @@ class TicketService:
         </html>
         """
 
+        to_emails = []
         for h in handlers:
             handler_emp = self.db.get(Employee, h.employee_id)
             if handler_emp and handler_emp.is_active:
-                to_email = handler_emp.official_email or handler_emp.email
-                if to_email:
-                    logger.info(f"Sending ticket notification email to handler: {to_email}")
-                    EmailService.send_email_with_active_config(
-                        db=self.db,
-                        to_email=to_email,
-                        subject=subject,
-                        html_content=html_content
-                    )
+                email_addr = handler_emp.official_email or handler_emp.email
+                if email_addr and email_addr not in to_emails:
+                    to_emails.append(email_addr)
+
+        if to_emails:
+            logger.info(f"Sending ticket notification email to handlers: {to_emails} (CC: {raised_by_email})")
+            EmailService.send_email_with_active_config(
+                db=self.db,
+                to_email=to_emails,
+                subject=subject,
+                html_content=html_content,
+                cc_email=raised_by_email
+            )
 
     def get_my_tickets(self, raised_by_id: uuid.UUID) -> list[Ticket]:
         return self.repo.get_tickets_by_raised_by(raised_by_id)
@@ -198,12 +203,12 @@ class TicketService:
             return self.repo.get_all_tickets()
         
         # Get categories handled by this employee
-        handlers = self.repo.get_handlers_by_employee(employee_id)
+        handlers = self.repo.get_handlers_by_employee(employee_id, is_active=True)
         category_ids = [h.category_id for h in handlers]
         return self.repo.get_tickets_by_categories(category_ids)
 
     def is_employee_handler(self, employee_id: uuid.UUID) -> bool:
-        handlers = self.repo.get_handlers_by_employee(employee_id)
+        handlers = self.repo.get_handlers_by_employee(employee_id, is_active=True)
         return len(handlers) > 0
 
     def get_ticket_details(self, ticket_id: uuid.UUID, employee_id: uuid.UUID, is_super_admin: bool = False) -> Ticket:
@@ -216,7 +221,7 @@ class TicketService:
             return ticket
 
         # Check if user is a handler for this category
-        handler = self.repo.get_handler_by_category_and_employee(ticket.category_id, employee_id)
+        handler = self.repo.get_handler_by_category_and_employee(ticket.category_id, employee_id, is_active=True)
         if not handler:
             raise ValueError("Access Denied: You do not have permission to view this ticket")
 
@@ -229,7 +234,7 @@ class TicketService:
 
         # Access check: Must be a configured handler for the category or admin
         if not is_super_admin:
-            handler = self.repo.get_handler_by_category_and_employee(ticket.category_id, performed_by_id)
+            handler = self.repo.get_handler_by_category_and_employee(ticket.category_id, performed_by_id, is_active=True)
             if not handler:
                 raise ValueError("Access Denied: Only support handlers can update ticket status")
 

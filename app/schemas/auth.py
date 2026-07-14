@@ -64,6 +64,7 @@ class UserMeResponse(BaseModel):
     email: str
     username: str
     is_active: bool
+    must_change_password: bool = True
     roles: list[str]
     role_codes: list[str] = []
     data_access_level: str = "SELF"

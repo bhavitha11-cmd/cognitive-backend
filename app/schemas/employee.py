@@ -226,6 +226,8 @@ class EmployeeResponse(BaseModel):
     employment_type: str | None = None
     account_status: str
     is_active: bool
+    must_change_password: bool = True
+    password_changed_at: datetime | None = None
     emergency_contact_name: str | None = None
     emergency_contact_phone: str | None = None
     address: str | None = None

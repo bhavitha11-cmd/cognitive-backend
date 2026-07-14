@@ -240,6 +240,7 @@ class EmployeeService:
         employee_data = data.model_dump(exclude={"password", "role_ids", "is_department_head", "team_id", "is_team_lead"})
         employee_data["account_status"] = status
         employee_data["password_hash"] = get_password_hash(data.password)
+        employee_data["must_change_password"] = True
 
         if not employee_data.get("display_name"):
             employee_data["display_name"] = f"{data.first_name} {data.last_name}".strip()
@@ -342,6 +343,8 @@ class EmployeeService:
 
         if "password" in update_data:
             update_data["password_hash"] = get_password_hash(update_data.pop("password"))
+            update_data["must_change_password"] = True
+            update_data["password_changed_at"] = None
 
         if "account_status" in update_data:
             new_status = update_data["account_status"].upper()
@@ -494,6 +497,12 @@ class EmployeeService:
                 old_value=log_old if log_old else None,
                 new_value=log_new if log_new else None,
             )
+            if "password" in data.model_dump(exclude_unset=True):
+                AuditService.log(
+                    self.db, "employee", id, "RESET_PASSWORD",
+                    performed_by=self.current_user_id,
+                    new_value={"employee_code": employee.employee_code}
+                )
             self.db.commit()
             # Invalidate hierarchy cache on successful update
             from app.core.hierarchy_cache import HierarchyCache

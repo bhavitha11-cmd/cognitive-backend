@@ -47,6 +47,8 @@ class Employee(Base):
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     token_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     mobile_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     alternate_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
