@@ -261,7 +261,7 @@ def submit_time_entry(
     )
 
 
-# ── Approve ────────────────────────────────────────────────────────────────────
+from app.schemas.time_entry import ApproveTimeEntryRequest
 
 @router.post(
     "/{id}/approve",
@@ -270,6 +270,7 @@ def submit_time_entry(
 )
 def approve_time_entry(
     id: uuid.UUID,
+    body: ApproveTimeEntryRequest | None = None,
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -279,8 +280,9 @@ def approve_time_entry(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     svc = TimeEntryService(db, current_user_id=uid)
+    adj = body.adjusted_hours if body else None
     try:
-        entry = svc.approve(id, uid)
+        entry = svc.approve(id, uid, adjusted_hours=adj)
     except ValueError as e:
         code = (
             status.HTTP_404_NOT_FOUND if "not found" in str(e).lower()
@@ -314,7 +316,7 @@ def reject_time_entry(
 
     svc = TimeEntryService(db, current_user_id=uid)
     try:
-        entry = svc.reject(id, body.reason, uid)
+        entry = svc.reject(id, body.reason, uid, adjusted_hours=body.adjusted_hours)
     except ValueError as e:
         code = (
             status.HTTP_404_NOT_FOUND if "not found" in str(e).lower()
@@ -323,7 +325,7 @@ def reject_time_entry(
         raise HTTPException(status_code=code, detail=str(e))
     return APIResponse(
         success=True,
-        message="Time entry rejected",
+        message="Time entry processed",
         data={"time_entry": entry.model_dump()},
     )
 

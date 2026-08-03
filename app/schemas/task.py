@@ -213,6 +213,7 @@ class TaskListResponse(BaseModel):
     rework_count: int = 0
     total_rework_hours: float = 0.0
     assignee_count: int = 0
+    is_active: bool = True
     assignments: list[TaskAssignmentResponse] = []
 
     model_config = ConfigDict(from_attributes=True)

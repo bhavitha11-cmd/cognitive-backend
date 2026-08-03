@@ -49,6 +49,7 @@ def list_tasks(
     dept_cat: str | None = Query(default=None),
     search: str | None = Query(default=None),
     employee_id: uuid.UUID | None = Query(default=None),
+    is_active: bool | None = Query(default=None),
     service: TaskService = Depends(_get_service),
     user_ctx: UserContext = Depends(require_data_access),
 ):
@@ -60,6 +61,7 @@ def list_tasks(
         dept_cat=dept_cat,
         search=search,
         employee_id=employee_id,
+        is_active=is_active,
         user_context=user_ctx,
     )
     return APIResponse(
@@ -224,7 +226,7 @@ def update_task(
 
     # Load existing task to check ownership
     existing_task = db.get(TaskModel, id)
-    if not existing_task or not existing_task.is_active:
+    if not existing_task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
     # Verify that the user has visibility to the task

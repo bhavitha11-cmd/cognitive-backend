@@ -228,6 +228,20 @@ def get_pending_approvals(
                     f"Leave Request ({req_obj.leave_type.name}) for {req_obj.total_days} "
                     f"day(s) from {req_obj.from_date} to {req_obj.to_date}. Reason: {req_obj.reason or 'No reason provided'}"
                 )
+        elif inst.module_type in ("TIME SHEET", "TIMESHEET", "TIME_ENTRY"):
+            from app.models.time_entry import TimeEntry
+            te_obj = service.db.get(TimeEntry, inst.target_id)
+            if te_obj:
+                emp = service.db.get(Employee, te_obj.employee_id)
+                if emp:
+                    requester_name = f"{emp.first_name} {emp.last_name}"
+                    requester_code = emp.employee_code
+                task_title = te_obj.task.title if te_obj.task else "Task"
+                task_code = te_obj.task.task_code if te_obj.task else ""
+                details_summary = (
+                    f"Time Sheet ({te_obj.hours_spent} hrs) on {te_obj.date} "
+                    f"for task {task_code} ({task_title}). Description: {te_obj.description or 'No description'}"
+                )
 
         app_role = service.db.get(Role, inst.approver_role_id)
         assigned_emp = (
@@ -288,6 +302,113 @@ def get_pending_approvals(
         success=True,
         message="Pending approvals retrieved successfully",
         data={"pending": result},
+    )
+
+
+@router.get("/history", response_model=APIResponse)
+def get_approval_history(
+    module_type: str | None = None,
+    service: ApprovalService = Depends(_get_service),
+):
+    user_id = service.current_user_id
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="User session not identified"
+        )
+
+    history_instances = service.get_approval_history(user_id, module_type=module_type)
+    result = []
+
+    for inst in history_instances:
+        requester_name = None
+        requester_code = None
+        details_summary = None
+
+        if inst.module_type == "LEAVE":
+            req_obj = service.db.get(LeaveRequest, inst.target_id)
+            if req_obj:
+                emp = service.db.get(Employee, req_obj.employee_id)
+                if emp:
+                    requester_name = f"{emp.first_name} {emp.last_name}"
+                    requester_code = emp.employee_code
+                details_summary = (
+                    f"Leave Request ({req_obj.leave_type.name}) for {req_obj.total_days} "
+                    f"day(s) from {req_obj.from_date} to {req_obj.to_date}. Reason: {req_obj.reason or 'No reason provided'}"
+                )
+        elif inst.module_type in ("TIME SHEET", "TIMESHEET", "TIME_ENTRY"):
+            from app.models.time_entry import TimeEntry
+            te_obj = service.db.get(TimeEntry, inst.target_id)
+            if te_obj:
+                emp = service.db.get(Employee, te_obj.employee_id)
+                if emp:
+                    requester_name = f"{emp.first_name} {emp.last_name}"
+                    requester_code = emp.employee_code
+                task_title = te_obj.task.title if te_obj.task else "Task"
+                task_code = te_obj.task.task_code if te_obj.task else ""
+                details_summary = (
+                    f"Time Sheet ({te_obj.hours_spent} hrs) on {te_obj.date} "
+                    f"for task {task_code} ({task_title}). Description: {te_obj.description or 'No description'}"
+                )
+
+        app_role = service.db.get(Role, inst.approver_role_id)
+        assigned_emp = (
+            service.db.get(Employee, inst.assigned_approver_id)
+            if inst.assigned_approver_id
+            else None
+        )
+        actioned_emp = (
+            service.db.get(Employee, inst.actioned_by_id)
+            if inst.actioned_by_id
+            else None
+        )
+        resolved_emp = (
+            service.db.get(Employee, inst.resolved_approver_id)
+            if inst.resolved_approver_id
+            else None
+        )
+
+        inst_resp = ApprovalInstanceResponse(
+            id=inst.id,
+            module_type=inst.module_type,
+            target_id=inst.target_id,
+            workflow_id=inst.workflow_id,
+            workflow_version=inst.workflow_version,
+            level=inst.level,
+            approver_role_id=inst.approver_role_id,
+            approver_role_name=app_role.name if app_role else None,
+            assigned_approver_id=inst.assigned_approver_id,
+            assigned_approver_name=(
+                f"{assigned_emp.first_name} {assigned_emp.last_name}"
+                if assigned_emp
+                else None
+            ),
+            status=inst.status,
+            actioned_by_id=inst.actioned_by_id,
+            actioned_by_name=(
+                f"{actioned_emp.first_name} {actioned_emp.last_name}"
+                if actioned_emp
+                else None
+            ),
+            actioned_at=inst.actioned_at,
+            comments=inst.comments,
+            resolved_by_scope=inst.resolved_by_scope,
+            resolved_approver_id=inst.resolved_approver_id,
+            resolved_approver_name=(
+                f"{resolved_emp.first_name} {resolved_emp.last_name}"
+                if resolved_emp
+                else None
+            ),
+            resolution_time=inst.resolution_time,
+            requester_name=requester_name,
+            requester_code=requester_code,
+            details_summary=details_summary,
+        )
+        result.append(inst_resp.model_dump())
+
+    return APIResponse(
+        success=True,
+        message="Approval history retrieved successfully",
+        data={"history": result},
     )
 
 

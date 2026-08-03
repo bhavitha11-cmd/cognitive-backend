@@ -75,6 +75,20 @@ MODULE_REGISTRY: list[tuple] = [
     ("settings", "Settings", "SettingsOutlinedIcon", 10, [
         ("settings", "Settings", "/settings", None, 1, True, True, True),
     ]),
+    # ── Biometric Module (isolated, additive) ─────────────────────────────────
+    ("biometric_settings", "Biometric Settings", "FingerprintOutlinedIcon", 11, [
+        ("biometric_devices", "Devices", "/biometric/settings/devices", None, 1, True, True, False),
+        ("biometric_connections", "Connection Profiles", "/biometric/settings/connections", None, 2, True, True, True),
+        ("biometric_mapping", "Employee Mapping", "/biometric/settings/mapping", None, 3, True, True, False),
+        ("biometric_sync_config", "Sync Configuration", "/biometric/settings/sync-config", None, 4, True, True, True),
+        ("biometric_test", "Connection Test", "/biometric/settings/test", None, 5, True, True, True),
+    ]),
+    ("biometric_attendance", "Biometric Attendance", "AccessTimeOutlinedIcon", 12, [
+        ("biometric_logs", "Biometric Logs", "/biometric/attendance/logs", None, 1, True, True, False),
+        ("biometric_live", "Live Attendance", "/biometric/attendance/live", None, 2, True, True, False),
+        ("biometric_sync_history", "Sync History", "/biometric/attendance/sync-history", None, 3, True, True, False),
+        ("biometric_device_health", "Device Health", "/biometric/attendance/health", None, 4, True, True, True),
+    ]),
 ]
 
 # Mapping from old module_name strings to new feature_keys

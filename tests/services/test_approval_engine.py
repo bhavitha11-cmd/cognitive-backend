@@ -897,5 +897,107 @@ def test_cannot_cancel_past_leave(db_session: Session, seed_data):
         leave_service.cancel_leave(req_resp.id)
 
 
+def test_timesheet_approval_workflow(db_session: Session, seed_data):
+    from app.models.project import Project
+    from app.models.task import Task
+    from app.models.time_entry import TimeEntry
+    from app.services.time_entry_service import TimeEntryService
+
+    emp = seed_data["employees"]["EMP"]
+    tl = seed_data["employees"]["TL"]
+    role_emp = seed_data["roles"]["EMP"]
+    role_tl = seed_data["roles"]["TL"]
+    from app.models.team import Team
+    team = db_session.scalars(select(Team)).first()
+
+    approval_service = ApprovalService(db_session)
+    te_service = TimeEntryService(db_session, current_user_id=emp.id)
+
+    # 1. Create and activate TIME SHEET workflow
+    wf = approval_service.create_workflow(name="Time Sheet Workflow", module_type="TIME SHEET")
+    steps = [
+        {
+            "requester_role_id": role_emp.id,
+            "level": 1,
+            "approver_role_id": role_tl.id,
+            "resolution_scope": "REPORTING_HIERARCHY",
+        }
+    ]
+    approval_service.set_workflow_steps(wf.id, steps)
+    approval_service.activate_workflow(wf.id)
+
+    from app.models.client import Client
+    client = Client(id=uuid.uuid4(), client_code="CLI-001", name="Test Client", is_active=True)
+    db_session.add(client)
+    db_session.flush()
+
+    # 2. Setup Project & Task
+    project = Project(
+        id=uuid.uuid4(),
+        project_code="PROJ-TS-01",
+        name="Test Project",
+        client_id=client.id,
+        status="IN_PROGRESS",
+        is_active=True,
+    )
+    db_session.add(project)
+    db_session.flush()
+
+    task = Task(
+        id=uuid.uuid4(),
+        task_code="PROJ-TS-01-001",
+        project_id=project.id,
+        team_id=team.id,
+        title="Testing Workflow",
+        status="IN_PROGRESS",
+        estimated_hours=10.0,
+        actual_hours=0.0,
+        is_active=True,
+    )
+    db_session.add(task)
+    db_session.flush()
+
+    # 3. Create Time Entry (Draft)
+    from app.schemas.time_entry import TimeEntryCreate
+    entry_resp = te_service.create(
+        TimeEntryCreate(
+            task_id=task.id,
+            date=date.today(),
+            hours_spent=5.0,
+            description="Working on workflow",
+        )
+    )
+    assert entry_resp.status == "DRAFT"
+
+    # 4. Submit Time Entry
+    sub_resp = te_service.submit(entry_resp.id)
+    assert sub_resp.status == "SUBMITTED"
+
+    # 5. Check that ApprovalInstance was generated and assigned to Team Lead (tl)
+    instances = db_session.scalars(
+        select(ApprovalInstance).where(ApprovalInstance.target_id == entry_resp.id)
+    ).all()
+    assert len(instances) == 1
+    assert instances[0].status == "PENDING"
+    assert instances[0].assigned_approver_id == tl.id
+
+    # 6. Team Lead approves the time sheet step
+    approval_service.submit_approval_action(
+        employee_id=tl.id,
+        instance_id=instances[0].id,
+        action="APPROVED",
+        comments="Great work",
+    )
+
+    db_session.expire_all()
+    entry_obj = db_session.get(TimeEntry, entry_resp.id)
+    assert entry_obj.status == "APPROVED"
+    assert entry_obj.approved_by == tl.id
+
+    task_obj = db_session.get(Task, task.id)
+    assert float(task_obj.actual_hours) == 5.0
+
+
+
 
 

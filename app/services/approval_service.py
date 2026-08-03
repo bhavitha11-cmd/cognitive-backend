@@ -162,23 +162,29 @@ class ApprovalService:
         # 1. REPORTING_HIERARCHY
         if step.resolution_scope == "REPORTING_HIERARCHY":
             curr_id = requester.reporting_manager_id
+            if not curr_id:
+                return None
+
             visited = {requester.id}
-            while curr_id and curr_id not in visited:
-                visited.add(curr_id)
+            temp_id = curr_id
+            while temp_id and temp_id not in visited:
+                visited.add(temp_id)
                 # Check if this manager holds the required role
                 role_exists = self.db.scalar(
                     select(EmployeeRole.id).where(
-                        EmployeeRole.employee_id == curr_id,
+                        EmployeeRole.employee_id == temp_id,
                         EmployeeRole.role_id == step.approver_role_id,
                         EmployeeRole.is_active.is_(True),
                     )
                 )
                 if role_exists:
-                    return curr_id
+                    return temp_id
                 # Move up the manager tree
-                mgr = self.db.get(Employee, curr_id)
-                curr_id = mgr.reporting_manager_id if mgr else None
-            return None
+                mgr = self.db.get(Employee, temp_id)
+                temp_id = mgr.reporting_manager_id if mgr else None
+            
+            # Fallback to direct reporting manager if no higher manager has exact role
+            return curr_id
 
         # 2. TEAM_ASSIGNMENT
         elif step.resolution_scope == "TEAM_ASSIGNMENT":
@@ -259,9 +265,15 @@ class ApprovalService:
         Sets the first active level to PENDING and returns the overall workflow status (PENDING or APPROVED).
         """
         # Fetch active workflow for module
+        mod_upper = module_type.upper()
+        if mod_upper in ("TIME SHEET", "TIMESHEET", "TIME_ENTRY"):
+            target_modules = ["TIME SHEET", "TIMESHEET", "TIME_ENTRY"]
+        else:
+            target_modules = [mod_upper]
+
         workflow = self.db.scalars(
             select(ApprovalWorkflow).where(
-                ApprovalWorkflow.module_type == module_type.upper(),
+                ApprovalWorkflow.module_type.in_(target_modules),
                 ApprovalWorkflow.is_active.is_(True),
             )
         ).first()
@@ -402,6 +414,48 @@ class ApprovalService:
 
         return my_approvals
 
+    def _get_all_subordinate_ids(self, manager_id: uuid.UUID) -> set[uuid.UUID]:
+        """
+        Recursively finds all direct and indirect subordinate employee IDs under a manager.
+        """
+        subordinates: set[uuid.UUID] = set()
+        to_visit = [manager_id]
+        while to_visit:
+            curr = to_visit.pop()
+            children = self.db.scalars(
+                select(Employee.id).where(Employee.reporting_manager_id == curr)
+            ).all()
+            for child_id in children:
+                if child_id not in subordinates:
+                    subordinates.add(child_id)
+                    to_visit.append(child_id)
+        return subordinates
+
+    def get_approval_history(self, user_id: uuid.UUID, module_type: str | None = None, limit: int = 50) -> list[ApprovalInstance]:
+        """
+        Retrieves actioned approval instances (APPROVED or REJECTED)
+        where the given user or any subordinate manager in their management tree was the actioner or assigned approver.
+        """
+        subordinate_ids = self._get_all_subordinate_ids(user_id)
+        allowed_ids = {user_id}.union(subordinate_ids)
+
+        query = select(ApprovalInstance).where(
+            ApprovalInstance.status.in_(["APPROVED", "REJECTED"]),
+            or_(
+                ApprovalInstance.actioned_by_id.in_(allowed_ids),
+                ApprovalInstance.assigned_approver_id.in_(allowed_ids),
+            )
+        )
+        if module_type:
+            mod_upper = module_type.upper()
+            if mod_upper in ("TIME SHEET", "TIMESHEET", "TIME_ENTRY"):
+                query = query.where(ApprovalInstance.module_type.in_(["TIME SHEET", "TIMESHEET", "TIME_ENTRY"]))
+            else:
+                query = query.where(ApprovalInstance.module_type == mod_upper)
+
+        query = query.order_by(ApprovalInstance.actioned_at.desc()).limit(limit)
+        return list(self.db.scalars(query).all())
+
     def submit_approval_action(
         self, employee_id: uuid.UUID, instance_id: uuid.UUID, action: Literal["APPROVED", "REJECTED"], comments: str | None = None
     ) -> tuple[str, str | None]:
@@ -513,19 +567,26 @@ class ApprovalService:
 
     def _get_requester_id_for_target(self, module_type: str, target_id: uuid.UUID) -> uuid.UUID:
         """
-        Internal helper to resolve the requester ID from a target object (e.g. LeaveRequest).
+        Internal helper to resolve the requester ID from a target object (e.g. LeaveRequest or TimeEntry).
         """
-        if module_type.upper() == "LEAVE":
+        mod_upper = module_type.upper()
+        if mod_upper == "LEAVE":
             from app.models.leave_request import LeaveRequest
             req = self.db.get(LeaveRequest, target_id)
             if req:
                 return req.employee_id
+        elif mod_upper in ("TIME SHEET", "TIMESHEET", "TIME_ENTRY"):
+            from app.models.time_entry import TimeEntry
+            entry = self.db.get(TimeEntry, target_id)
+            if entry:
+                return entry.employee_id
         raise ValueError(f"Unsupported module type '{module_type}' or target ID not found.")
 
     def _update_target_status(
         self, module_type: str, target_id: uuid.UUID, status: str, comments: str | None, actioned_by: uuid.UUID
     ) -> None:
-        if module_type.upper() == "LEAVE":
+        mod_upper = module_type.upper()
+        if mod_upper == "LEAVE":
             from app.models.leave_request import LeaveRequest
             req = self.db.get(LeaveRequest, target_id)
             if req:
@@ -551,6 +612,24 @@ class ApprovalService:
                         pass
                 self.db.add(req)
                 self.db.flush()
+        elif mod_upper in ("TIME SHEET", "TIMESHEET", "TIME_ENTRY"):
+            from app.models.time_entry import TimeEntry
+            entry = self.db.get(TimeEntry, target_id)
+            if entry:
+                entry.status = status
+                if status == "REJECTED":
+                    entry.rejection_reason = comments
+                elif status == "APPROVED":
+                    entry.approved_by = actioned_by
+                    entry.approved_at = datetime.now(timezone.utc)
+                    entry.rejection_reason = None
+                self.db.add(entry)
+                self.db.flush()
+
+                # Recompute task actual hours & project metrics
+                from app.services.time_entry_service import TimeEntryService
+                te_svc = TimeEntryService(self.db, actioned_by)
+                te_svc._recompute_task_actual_hours(entry.task_id)
 
     def _recompute_leave_used(self, employee_id: uuid.UUID, leave_type_id: uuid.UUID, year: int) -> None:
         from app.models.leave_balance import LeaveBalance

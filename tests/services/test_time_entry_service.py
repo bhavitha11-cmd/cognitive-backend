@@ -246,7 +246,7 @@ class TestSubmit:
         existing_entry = make_mock_time_entry(status="SUBMITTED")
         mock_db.scalars.return_value.unique.return_value.first.return_value = existing_entry
 
-        with pytest.raises(ValueError, match="Only DRAFT entries can be submitted"):
+        with pytest.raises(ValueError, match="Only DRAFT or REJECTED entries can be submitted"):
             time_entry_service.submit(TEST_TIME_ENTRY_ID)
 
 

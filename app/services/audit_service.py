@@ -35,7 +35,7 @@ class AuditService:
     def log(
         db,
         entity_type: str,
-        entity_id: uuid.UUID,
+        entity_id: uuid.UUID | None,
         action: str,
         performed_by: uuid.UUID | None = None,
         old_value: dict | None = None,
@@ -45,13 +45,15 @@ class AuditService:
     ) -> AuditLog:
         ctx_ip, ctx_ua = get_audit_context()
         
+        target_entity_id = entity_id or performed_by or uuid.uuid4()
+
         # Ensure values are JSON serializable (converts UUIDs and dates/datetimes to strings)
         serialized_old = AuditService._make_json_serializable(old_value)
         serialized_new = AuditService._make_json_serializable(new_value)
 
         entry = AuditLog(
             entity_type=entity_type,
-            entity_id=entity_id,
+            entity_id=target_entity_id,
             action=action,
             old_value=serialized_old,
             new_value=serialized_new,

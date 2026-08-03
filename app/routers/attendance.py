@@ -207,6 +207,10 @@ def list_attendance(
             records = service.get_by_employee(
                 employee_id, from_date, to_date, skip=skip, limit=limit
             )
+        elif from_date or to_date:
+            records = service.get_by_date_range(
+                from_date, to_date, department_id, skip=skip, limit=limit
+            )
         elif record_date:
             records = service.get_by_date(
                 record_date, department_id, skip=skip, limit=limit

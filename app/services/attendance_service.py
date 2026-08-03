@@ -344,6 +344,32 @@ class AttendanceService:
         records = self.db.scalars(stmt).all()
         return [_build_response(r) for r in records]
 
+    def get_by_date_range(
+        self,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        department_id: uuid.UUID | None = None,
+        skip: int = 0,
+        limit: int = 500,
+    ) -> list[AttendanceResponse]:
+        skip = max(0, skip)
+        limit = max(1, min(limit, 500))
+        stmt = (
+            select(Attendance)
+            .join(Attendance.employee)
+            .options(selectinload(Attendance.employee))
+            .order_by(Attendance.date.desc(), Employee.last_name, Employee.first_name)
+        )
+        if from_date:
+            stmt = stmt.where(Attendance.date >= from_date)
+        if to_date:
+            stmt = stmt.where(Attendance.date <= to_date)
+        if department_id:
+            stmt = stmt.where(Employee.department_id == department_id)
+        stmt = stmt.offset(skip).limit(limit)
+        records = self.db.scalars(stmt).all()
+        return [_build_response(r) for r in records]
+
     def get_summary(
         self,
         employee_id: uuid.UUID,

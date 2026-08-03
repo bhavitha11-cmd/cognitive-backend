@@ -10,10 +10,24 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.common import APIResponse
 
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
 class WorkSessionCreate(BaseModel):
     task_id: uuid.UUID
     project_id: uuid.UUID
-    session_type: Literal["REGULAR", "OVERTIME", "TRAINING", "MEETING"] = "REGULAR"
+    session_type: str = "REGULAR"
+
+    @field_validator("session_type", mode="before")
+    @classmethod
+    def validate_session_type(cls, v: str | None) -> str:
+        if not v:
+            return "REGULAR"
+        val = str(v).upper()
+        allowed = {"REGULAR", "OVERTIME", "TRAINING", "MEETING", "REWORK"}
+        if val not in allowed:
+            raise ValueError(f"session_type must be one of {sorted(allowed)}")
+        return val
 
 
 class WorkSessionPause(BaseModel):

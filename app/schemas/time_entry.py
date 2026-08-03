@@ -7,7 +7,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-VALID_ENTRY_TYPES = {"REGULAR", "OVERTIME", "CORRECTION"}
+VALID_ENTRY_TYPES = {"REGULAR", "OVERTIME", "CORRECTION", "REWORK"}
 VALID_STATUSES = {"DRAFT", "SUBMITTED", "APPROVED", "REJECTED"}
 
 
@@ -61,6 +61,7 @@ class TimeEntryResponse(BaseModel):
     status: str
     submitted_at: Optional[datetime]
     approved_by: Optional[uuid.UUID]
+    approved_by_name: Optional[str] = None
     approved_at: Optional[datetime]
     rejection_reason: Optional[str]
     created_at: Optional[datetime]
@@ -84,5 +85,11 @@ class TimeEntryCreateBatch(BaseModel):
     entries: list[TimeEntryCreate] = Field(min_length=1, max_length=50)
 
 
+class ApproveTimeEntryRequest(BaseModel):
+    adjusted_hours: Optional[float] = Field(None, gt=0, le=24)
+
+
 class RejectTimeEntryRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
+    adjusted_hours: Optional[float] = Field(None, gt=0, le=24)
+

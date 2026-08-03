@@ -326,19 +326,36 @@ class TimeEntryService:
         if entry.employee_id != self.current_user_id:
             raise ValueError("You can only submit your own time entries")
 
-        if entry.status != "DRAFT":
+        if entry.status not in ("DRAFT", "REJECTED"):
             raise ValueError(
-                f"Only DRAFT entries can be submitted. Current status: {entry.status}"
+                f"Only DRAFT or REJECTED entries can be submitted. Current status: {entry.status}"
             )
 
-        entry.status = "SUBMITTED"
         entry.submitted_at = datetime.now(timezone.utc)
 
+        # Trigger Approval Engine if active workflow exists for time sheets
+        from app.services.approval_service import ApprovalService
+        approval_svc = ApprovalService(self.db, self.current_user_id)
+
         try:
+            flow_status = approval_svc.initialize_approval_flow("TIME SHEET", entry.id, entry.employee_id)
+            if flow_status == "APPROVED":
+                entry.status = "APPROVED"
+                entry.approved_by = self.current_user_id
+                entry.approved_at = datetime.now(timezone.utc)
+            else:
+                entry.status = "SUBMITTED"
+        except ValueError:
+            # Fallback if no active workflow configured for time sheets
+            entry.status = "SUBMITTED"
+
+        try:
+            self._recompute_task_actual_hours(entry.task_id)
+
             AuditService.log(
                 self.db, "time_entry", id, "SUBMIT",
                 performed_by=self.current_user_id,
-                new_value={"status": "SUBMITTED", "submitted_at": str(entry.submitted_at)},
+                new_value={"status": entry.status, "submitted_at": str(entry.submitted_at)},
             )
 
             self.db.commit()
@@ -350,7 +367,7 @@ class TimeEntryService:
 
     # ── Approve ────────────────────────────────────────────────────────────────
 
-    def approve(self, id: UUID, approved_by_id: UUID) -> TimeEntryResponse:
+    def approve(self, id: UUID, approved_by_id: UUID, adjusted_hours: float | None = None) -> TimeEntryResponse:
         entry = self._fetch_entry(id)
         if not entry:
             raise ValueError("Time entry not found")
@@ -359,6 +376,9 @@ class TimeEntryService:
             raise ValueError(
                 f"Only SUBMITTED entries can be approved. Current status: {entry.status}"
             )
+
+        if adjusted_hours is not None and adjusted_hours > 0:
+            entry.hours_spent = adjusted_hours
 
         entry.status = "APPROVED"
         entry.approved_by = approved_by_id
@@ -376,6 +396,7 @@ class TimeEntryService:
                     "status": "APPROVED",
                     "approved_by": str(approved_by_id),
                     "approved_at": str(entry.approved_at),
+                    "hours_spent": float(entry.hours_spent),
                 },
             )
 
@@ -388,7 +409,7 @@ class TimeEntryService:
 
     # ── Reject ─────────────────────────────────────────────────────────────────
 
-    def reject(self, id: UUID, reason: str, rejected_by_id: UUID) -> TimeEntryResponse:
+    def reject(self, id: UUID, reason: str, rejected_by_id: UUID, adjusted_hours: float | None = None) -> TimeEntryResponse:
         entry = self._fetch_entry(id)
         if not entry:
             raise ValueError("Time entry not found")
@@ -399,8 +420,17 @@ class TimeEntryService:
             )
 
         old_status = entry.status
-        entry.status = "REJECTED"
-        entry.rejection_reason = reason
+
+        # If manager specifies approved/adjusted hours during rejection/review
+        if adjusted_hours is not None and adjusted_hours > 0:
+            entry.hours_spent = adjusted_hours
+            entry.status = "APPROVED"  # Partial approval with adjusted hours
+            entry.approved_by = rejected_by_id
+            entry.approved_at = datetime.now(timezone.utc)
+            entry.rejection_reason = f"Adjusted by manager: {reason}"
+        else:
+            entry.status = "REJECTED"
+            entry.rejection_reason = reason
 
         try:
             self._recompute_task_actual_hours(entry.task_id)
@@ -409,7 +439,11 @@ class TimeEntryService:
                 self.db, "time_entry", id, "REJECT",
                 performed_by=rejected_by_id,
                 old_value={"status": old_status},
-                new_value={"status": "REJECTED", "rejection_reason": reason},
+                new_value={
+                    "status": entry.status,
+                    "rejection_reason": entry.rejection_reason,
+                    "hours_spent": float(entry.hours_spent),
+                },
             )
 
             self.db.commit()
@@ -584,6 +618,12 @@ class TimeEntryService:
         if entry.project:
             project_name = getattr(entry.project, "name", None)
 
+        approved_by_name = None
+        if entry.approved_by:
+            approver = self.db.get(Employee, entry.approved_by)
+            if approver:
+                approved_by_name = f"{approver.first_name} {approver.last_name}"
+
         return TimeEntryResponse(
             id=entry.id,
             employee_id=entry.employee_id,
@@ -602,6 +642,7 @@ class TimeEntryService:
             status=entry.status,
             submitted_at=entry.submitted_at,
             approved_by=entry.approved_by,
+            approved_by_name=approved_by_name,
             approved_at=entry.approved_at,
             rejection_reason=entry.rejection_reason,
             created_at=entry.created_at,
@@ -625,15 +666,27 @@ class TimeEntryService:
         
         now = datetime.now(timezone.utc)
         count = 0
+        from app.services.approval_service import ApprovalService
+        approval_svc = ApprovalService(self.db, self.current_user_id)
+
         for entry in entries:
-            entry.status = "SUBMITTED"
             entry.submitted_at = now
+            try:
+                flow_status = approval_svc.initialize_approval_flow("TIME SHEET", entry.id, entry.employee_id)
+                if flow_status == "APPROVED":
+                    entry.status = "APPROVED"
+                    entry.approved_by = self.current_user_id
+                    entry.approved_at = now
+                else:
+                    entry.status = "SUBMITTED"
+            except ValueError:
+                entry.status = "SUBMITTED"
             count += 1
             
         if count > 0:
             try:
                 AuditService.log(
-                    self.db, "time_entry", None, "BATCH_SUBMIT_WEEK",
+                    self.db, "time_entry", self.current_user_id, "BATCH_SUBMIT_WEEK",
                     performed_by=self.current_user_id,
                     new_value={"date_from": str(date_from), "date_to": str(date_to), "count": count}
                 )
@@ -674,7 +727,7 @@ class TimeEntryService:
                     self._recompute_task_actual_hours(tid)
 
                 AuditService.log(
-                    self.db, "time_entry", None, "BATCH_APPROVE_WEEK",
+                    self.db, "time_entry", employee_id, "BATCH_APPROVE_WEEK",
                     performed_by=self.current_user_id,
                     new_value={"employee_id": str(employee_id), "date_from": str(date_from), "date_to": str(date_to), "count": count}
                 )
@@ -712,7 +765,7 @@ class TimeEntryService:
                     self._recompute_task_actual_hours(tid)
 
                 AuditService.log(
-                    self.db, "time_entry", None, "BATCH_REJECT_WEEK",
+                    self.db, "time_entry", employee_id, "BATCH_REJECT_WEEK",
                     performed_by=self.current_user_id,
                     new_value={"employee_id": str(employee_id), "date_from": str(date_from), "date_to": str(date_to), "count": count, "reason": reason}
                 )

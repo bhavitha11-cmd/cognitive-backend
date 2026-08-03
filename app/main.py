@@ -46,6 +46,7 @@ from app.routers.email_configuration import router as email_configuration_router
 from app.routers.ticket import router as ticket_router
 import app.core.redis
 from app.middleware.audit_context import set_audit_context
+from app.routers.biometric import router as biometric_router
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -93,6 +94,9 @@ for log_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.default"
 
 # Keep SQLAlchemy engine logs quiet unless DB_ECHO is on
 logging.getLogger("sqlalchemy.engine").setLevel(logging.DEBUG if settings.DB_ECHO else logging.WARNING)
+
+# Keep watchfiles log quiet to avoid cluttering console during development reload
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 # NOTE (rate limiting): This is the app-level Limiter bound to app.state.limiter
 # and used by the RateLimitExceeded handler. Some routers (e.g. auth.py) currently
@@ -346,6 +350,9 @@ app.include_router(dashboard_analytics_router, prefix="/api/v1")
 app.include_router(schedule_review_router, prefix="/api/v1")
 app.include_router(modules_router, prefix="/api/v1")
 app.include_router(ticket_router, prefix="/api/v1")
+
+# ── Biometric Module (isolated, additive) ─────────────────────────────────────
+app.include_router(biometric_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["General"])

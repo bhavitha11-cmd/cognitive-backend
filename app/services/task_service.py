@@ -39,6 +39,7 @@ class TaskService:
         dept_cat: str | None = None,
         search: str | None = None,
         employee_id: UUID | None = None,
+        is_active: bool | None = True,
         user_context=None,
     ) -> tuple[list[TaskListResponse], int]:
         if user_context:
@@ -46,23 +47,27 @@ class TaskService:
                 user_context,
                 skip=skip, limit=limit, project_id=project_id,
                 status=status, dept_cat=dept_cat, search=search,
+                is_active=is_active,
                 employee_id=employee_id,
             )
             total = self.repo.count_scoped(
                 user_context,
                 project_id=project_id, status=status,
                 dept_cat=dept_cat, search=search,
+                is_active=is_active,
                 employee_id=employee_id,
             )
         else:
             tasks = self.repo.get_all(
                 skip=skip, limit=limit, project_id=project_id,
                 status=status, dept_cat=dept_cat, search=search,
+                is_active=is_active,
                 employee_id=employee_id,
             )
             total = self.repo.count(
                 project_id=project_id, status=status,
                 dept_cat=dept_cat, search=search,
+                is_active=is_active,
                 employee_id=employee_id,
             )
         return [self._build_list_response(t) for t in tasks], total
@@ -238,7 +243,7 @@ class TaskService:
     # ── Update ─────────────────────────────────────────────────────────────────
 
     def update(self, id: UUID, data: TaskUpdate) -> TaskResponse:
-        task = self.repo.get_by_id(id, load_assignments=True)
+        task = self.repo.get_by_id(id, load_assignments=True, include_inactive=True)
         if not task:
             raise ValueError(f"Task with id {id} not found")
 
@@ -365,10 +370,11 @@ class TaskService:
             new_value=update_data,
         )
 
-        task = self.repo.get_by_id(id, load_assignments=True)
+        task = self.repo.get_by_id(id, load_assignments=True, include_inactive=True)
 
         # Recalculate project metrics whenever task changes
-        self._trigger_project_recalc(task.project_id)
+        if task:
+            self._trigger_project_recalc(task.project_id)
 
         return self._build_response(task)
 
@@ -649,5 +655,6 @@ class TaskService:
             rework_count=task.rework_count or 0,
             total_rework_hours=float(task.total_rework_hours or 0),
             assignee_count=len(active_assignments),
+            is_active=task.is_active,
             assignments=assignments_response,
         )

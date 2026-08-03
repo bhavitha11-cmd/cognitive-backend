@@ -15,3 +15,5 @@ redis>=5.0.0
 python-multipart
 requests
 cryptography
+apscheduler>=3.10.0
+apscheduler[redis]>=3.10.0

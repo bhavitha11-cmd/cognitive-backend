@@ -12,11 +12,13 @@ from app.repositories.base import BaseRepository
 
 class TaskRepository(BaseRepository):
 
-    def get_by_id(self, id: UUID, load_assignments: bool = False) -> Task | None:
+    def get_by_id(self, id: UUID, load_assignments: bool = False, include_inactive: bool = False) -> Task | None:
         stmt = select(Task).options(
             joinedload(Task.project),
             joinedload(Task.team),
-        ).where(Task.id == id, Task.is_active == True)  # noqa: E712
+        ).where(Task.id == id)
+        if not include_inactive:
+            stmt = stmt.where(Task.is_active == True)  # noqa: E712
         if load_assignments:
             stmt = stmt.options(
                 selectinload(Task.assignments).joinedload(TaskAssignment.employee),
@@ -223,7 +225,7 @@ class TaskRepository(BaseRepository):
         from app.core.rbac import DataAccessLevel
         if user_context.data_access_level == DataAccessLevel.FULL:
             return True
-        stmt = select(func.count()).select_from(Task).where(Task.id == task_id, Task.is_active == True)
+        stmt = select(func.count()).select_from(Task).where(Task.id == task_id)
         stmt = self._apply_scope_filter(stmt, user_context)
         return (self.db.scalar(stmt) or 0) > 0
 

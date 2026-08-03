@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, String, func, Boolean
+from sqlalchemy import DateTime, Float, String, func, Boolean, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,9 @@ class CalendarSettings(Base):
     )
     weekend_days: Mapped[str] = mapped_column(
         String(100), default="SUN", nullable=False
+    )
+    weekly_off_rules: Mapped[dict | None] = mapped_column(
+        JSON, default=None, nullable=True
     )
     office_start_time: Mapped[str] = mapped_column(
         String(5), default="09:00", nullable=False
