@@ -23,7 +23,7 @@ def list_connection_profiles(
     svc: ConnectionProfileService = Depends(_get_service),
 ):
     if device_id:
-        profiles = svc.list_profiles_by_device(device_id)
+        profiles = svc.list_profiles(device_id)
         return profiles
     return []
 
@@ -37,7 +37,7 @@ def create_connection_profile(
         profile = svc.create_profile(
             device_id=payload.device_id,
             connection_type=payload.connection_type,
-            config_dict=payload.config_encrypted
+            config_dict=payload.config.model_dump()
         )
         return profile
     except ValueError as e:
@@ -64,12 +64,13 @@ def update_connection_profile(
     svc: ConnectionProfileService = Depends(_get_service),
 ):
     try:
-        profile = svc.update_profile(
-            profile_id,
-            connection_type=payload.connection_type,
-            config_dict=payload.config_encrypted,
-            is_active=payload.is_active
-        )
+        update_data = {}
+        if payload.config is not None:
+            update_data["config_dict"] = payload.config.model_dump()
+        if payload.is_active is not None:
+            update_data["is_active"] = payload.is_active
+            
+        profile = svc.update_profile(profile_id, update_data)
         if not profile:
             raise HTTPException(status_code=404, detail="Profile not found")
         return profile

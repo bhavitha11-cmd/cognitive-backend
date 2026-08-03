@@ -11,7 +11,7 @@ class BmNormalizedLog(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     raw_log_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("bm_raw_logs.id", ondelete="RESTRICT"), unique=True, nullable=False)
-    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employees.id", ondelete="RESTRICT"), nullable=False)
+    employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("employees.id", ondelete="RESTRICT"), nullable=True)
     device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("bm_devices.id", ondelete="RESTRICT"), index=True, nullable=False)
     punch_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     punch_type: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
@@ -21,6 +21,5 @@ class BmNormalizedLog(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     attendance_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
-    __table_args__ = (
-        Index("ix_bm_norm_logs_emp_time", "employee_id", "punch_timestamp"),
-    )
+    employee: Mapped["Employee"] = relationship("Employee", foreign_keys=[employee_id], lazy="joined")
+    device: Mapped["BmDevice"] = relationship("BmDevice", foreign_keys=[device_id], lazy="joined")

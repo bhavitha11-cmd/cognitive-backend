@@ -17,28 +17,21 @@ class ConnectorFactory:
         ("ESSL", "DATABASE"): "app.services.biometric.connectors.essl.essl_database.ESSLDatabaseConnector",
         ("ESSL", "REST_API"): "app.services.biometric.connectors.essl.essl_rest.ESSLRestConnector",
         ("ESSL", "ADMS_PUSH"): "app.services.biometric.connectors.essl.essl_adms.ESSLAdmsConnector",
-        # Future vendors:
-        # ("ZKTECO", "DIRECT"): "...zkteco...",
-        # ("SUPREMA", "REST_API"): "...suprema...",
+        ("ZKTECO", "DIRECT"): "app.services.biometric.connectors.essl.essl_direct.ESSLDirectConnector",
+        ("ZKTECO", "DATABASE"): "app.services.biometric.connectors.essl.essl_database.ESSLDatabaseConnector",
+        ("ZKTECO", "REST_API"): "app.services.biometric.connectors.essl.essl_rest.ESSLRestConnector",
+        ("ZKTECO", "ADMS_PUSH"): "app.services.biometric.connectors.essl.essl_adms.ESSLAdmsConnector",
+        ("MATRIX", "DIRECT"): "app.services.biometric.connectors.essl.essl_direct.ESSLDirectConnector",
     }
     
     @classmethod
     def get_connector(cls, vendor: str, connection_type: str, encrypted_config: str) -> BiometricConnector:
-        """
-        Decrypt config and instantiate the correct connector.
-        
-        Args:
-            vendor: Vendor identifier (ESSL, ZKTECO, etc.)
-            connection_type: Connection method (DIRECT, DATABASE, etc.)
-            encrypted_config: Fernet-encrypted JSON config string
-        
-        Returns:
-            BiometricConnector instance ready to use
-        """
         key = (vendor.upper(), connection_type.upper())
         class_path = cls._registry.get(key)
         if not class_path:
-            raise ValueError(f"No connector registered for vendor='{vendor}' type='{connection_type}'")
+            # Fallback to direct connector for unknown vendors
+            class_path = "app.services.biometric.connectors.essl.essl_direct.ESSLDirectConnector"
+
         
         # Dynamically import connector class
         module_path, class_name = class_path.rsplit(".", 1)

@@ -216,19 +216,29 @@ def upgrade() -> None:
     for role_id, role_code in roles:
         for fk in ["raise_ticket", "my_tickets"]:
             if fk in feat_ids:
-                session.execute(
-                    sa.text("INSERT INTO role_permissions (id, role_id, feature_id, module_name, view_scope, create_scope, update_scope, delete_scope) "
-                            "VALUES (:id, :role_id, :feature_id, null, 'ALL', 'ALL', 'ALL', 'ALL') ON CONFLICT (role_id, feature_id) DO NOTHING"),
-                    {"id": uuid.uuid4(), "role_id": role_id, "feature_id": feat_ids[fk]}
-                )
+                existing = session.execute(
+                    sa.text("SELECT id FROM role_permissions WHERE role_id = :role_id AND feature_id = :feature_id"),
+                    {"role_id": role_id, "feature_id": feat_ids[fk]}
+                ).fetchone()
+                if not existing:
+                    session.execute(
+                        sa.text("INSERT INTO role_permissions (id, role_id, feature_id, module_name, view_scope, create_scope, update_scope, delete_scope) "
+                                "VALUES (:id, :role_id, :feature_id, null, 'ALL', 'ALL', 'ALL', 'ALL')"),
+                        {"id": uuid.uuid4(), "role_id": role_id, "feature_id": feat_ids[fk]}
+                    )
         if role_code == "ADMIN":
             for fk in ["ticket_settings", "category_tickets"]:
                 if fk in feat_ids:
-                    session.execute(
-                        sa.text("INSERT INTO role_permissions (id, role_id, feature_id, module_name, view_scope, create_scope, update_scope, delete_scope) "
-                                "VALUES (:id, :role_id, :feature_id, null, 'ALL', 'ALL', 'ALL', 'ALL') ON CONFLICT (role_id, feature_id) DO NOTHING"),
-                        {"id": uuid.uuid4(), "role_id": role_id, "feature_id": feat_ids[fk]}
-                    )
+                    existing = session.execute(
+                        sa.text("SELECT id FROM role_permissions WHERE role_id = :role_id AND feature_id = :feature_id"),
+                        {"role_id": role_id, "feature_id": feat_ids[fk]}
+                    ).fetchone()
+                    if not existing:
+                        session.execute(
+                            sa.text("INSERT INTO role_permissions (id, role_id, feature_id, module_name, view_scope, create_scope, update_scope, delete_scope) "
+                                    "VALUES (:id, :role_id, :feature_id, null, 'ALL', 'ALL', 'ALL', 'ALL')"),
+                            {"id": uuid.uuid4(), "role_id": role_id, "feature_id": feat_ids[fk]}
+                        )
     session.commit()
 
 

@@ -20,18 +20,32 @@ class EmployeeMappingService:
         self.current_user_id = current_user_id
     
     def create_mapping(self, employee_id: uuid.UUID, device_id: uuid.UUID, biometric_user_id: str, method: str = 'MANUAL') -> BmEmployeeMapping:
-        existing = self.get_mapping_by_employee_device(employee_id, device_id)
-        if existing and existing.is_active:
-            raise ValueError(f"Active mapping already exists for employee {employee_id} and device {device_id}")
-            
+        # Check for any existing mapping (active OR inactive) for this employee+device
+        existing_any = self.db.scalar(
+            select(BmEmployeeMapping).where(
+                BmEmployeeMapping.employee_id == employee_id,
+                BmEmployeeMapping.device_id == device_id,
+            )
+        )
+        if existing_any:
+            if existing_any.is_active:
+                raise ValueError(f"Active mapping already exists for employee {employee_id} and device {device_id}")
+            # Reactivate the inactive mapping with new biometric_user_id
+            existing_any.is_active = True
+            existing_any.biometric_user_id = biometric_user_id
+            existing_any.mapping_method = method
+            existing_any.mapped_by = self.current_user_id
+            self.db.commit()
+            self.db.refresh(existing_any)
+            return existing_any
+
         mapping = BmEmployeeMapping(
             employee_id=employee_id,
             device_id=device_id,
             biometric_user_id=biometric_user_id,
             mapping_method=method,
             is_active=True,
-            created_by=self.current_user_id,
-            updated_by=self.current_user_id,
+            mapped_by=self.current_user_id,
         )
         self.db.add(mapping)
         self.db.commit()

@@ -86,11 +86,21 @@ def update_sync_config(
     _=Depends(get_current_user),
 ):
     from app.services.biometric.sync_config_service import SyncConfigService
+    from app.services.biometric.scheduler_service import get_biometric_scheduler
     svc = SyncConfigService(db)
     try:
         config = svc.update_config(device_id, payload.model_dump(exclude_unset=True))
         if not config:
             raise HTTPException(status_code=404, detail="Sync config not found")
+        
+        # Sync with background scheduler
+        scheduler = get_biometric_scheduler()
+        scheduler.start()
+        if config.is_auto_sync and config.is_active:
+            scheduler.schedule_device(device_id, config.sync_interval_minutes or 1)
+        else:
+            scheduler.remove_device(device_id)
+
         return config
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

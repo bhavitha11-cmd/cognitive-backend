@@ -21,6 +21,12 @@ class ConnectionProfileService:
         self.current_user_id = current_user_id
     
     def create_profile(self, device_id: uuid.UUID, connection_type: str, config_dict: dict) -> BmConnectionProfile:
+        existing_profile = self.get_profile_for_device(device_id)
+        if existing_profile and 'password' in config_dict and (config_dict['password'] == '****' or not config_dict['password']):
+            existing_config = self.get_decrypted_config(existing_profile.id)
+            if 'password' in existing_config:
+                config_dict['password'] = existing_config['password']
+
         config_json = json.dumps(config_dict)
         encrypted_config = encrypt_value(config_json)
         
@@ -79,7 +85,12 @@ class ConnectionProfileService:
             profile.is_active = data["is_active"]
         
         if "config_dict" in data and data["config_dict"]:
-            config_json = json.dumps(data["config_dict"])
+            new_config = data["config_dict"]
+            if 'password' in new_config and (new_config['password'] == '****' or not new_config['password']):
+                existing_config = self.get_decrypted_config(profile_id)
+                if 'password' in existing_config and existing_config['password']:
+                    new_config['password'] = existing_config['password']
+            config_json = json.dumps(new_config)
             profile.config_encrypted = encrypt_value(config_json)
             
         profile.updated_by = self.current_user_id

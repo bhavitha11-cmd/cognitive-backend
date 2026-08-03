@@ -44,41 +44,56 @@ class NormalizationService:
     def normalize_raw_log(self, raw_log: BmRawLog) -> Optional[BmNormalizedLog]:
         """
         Normalize a single raw log into a normalized log entry.
-        Returns None if normalization fails (unmapped user, invalid data, etc.)
+        Unmapped logs are preserved with processing_status='UNMAPPED'.
         """
         # Skip duplicates
         if raw_log.is_duplicate:
             return None
         
-        # Skip if no mapping
-        if not raw_log.employee_mapping_id:
-            return None
-        
+        employee_id = None
+        mapping = None
+        if raw_log.employee_mapping_id:
+            mapping = self.db.scalar(
+                select(BmEmployeeMapping).where(BmEmployeeMapping.id == raw_log.employee_mapping_id)
+            )
+        if not mapping and raw_log.device_user_id:
+            mapping = self.db.scalar(
+                select(BmEmployeeMapping).where(
+                    BmEmployeeMapping.device_id == raw_log.device_id,
+                    BmEmployeeMapping.biometric_user_id == raw_log.device_user_id,
+                    BmEmployeeMapping.is_active == True
+                )
+            )
+            if mapping:
+                raw_log.employee_mapping_id = mapping.id
+
+        if mapping and mapping.is_active:
+            employee_id = mapping.employee_id
+
+        # Normalize punch type
+        normalized_punch_type = self._normalize_punch_type(raw_log.punch_type, raw_log.verification_type)
+        status = "PENDING" if employee_id else "UNMAPPED"
+
         # Check if already normalized
         existing = self.db.scalar(
             select(BmNormalizedLog).where(BmNormalizedLog.raw_log_id == raw_log.id)
         )
         if existing:
+            if existing.employee_id != employee_id or existing.processing_status != status:
+                existing.employee_id = employee_id
+                existing.processing_status = status
+                existing.punch_type = normalized_punch_type
+                self.db.add(existing)
             return existing
-        
-        # Get employee from mapping
-        mapping = self.db.scalar(
-            select(BmEmployeeMapping).where(BmEmployeeMapping.id == raw_log.employee_mapping_id)
-        )
-        if not mapping or not mapping.is_active:
-            return None
-        
-        # Normalize punch type
-        normalized_punch_type = self._normalize_punch_type(raw_log.punch_type, raw_log.verification_type)
-        
+
         normalized = BmNormalizedLog(
             raw_log_id=raw_log.id,
-            employee_id=mapping.employee_id,
+            employee_id=employee_id,
             device_id=raw_log.device_id,
             punch_timestamp=raw_log.punch_timestamp,
             punch_type=normalized_punch_type,
             verification_type=raw_log.verification_type,
-            processing_status="PENDING",
+            processing_status=status,
         )
         self.db.add(normalized)
         return normalized

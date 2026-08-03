@@ -314,6 +314,26 @@ def on_startup():
     finally:
         cleanup_db.close()
 
+    # Initialize & Start Biometric Automated Sync Scheduler
+    try:
+        from app.services.biometric.scheduler_service import get_biometric_scheduler
+        from app.models.biometric.bm_sync_config import BmSyncConfig
+        scheduler = get_biometric_scheduler()
+        scheduler.start()
+
+        sched_db = SessionLocal()
+        try:
+            active_configs = sched_db.scalars(
+                select(BmSyncConfig).where(BmSyncConfig.is_auto_sync == True, BmSyncConfig.is_active == True)
+            ).all()
+            for cfg in active_configs:
+                scheduler.schedule_device(cfg.device_id, cfg.sync_interval_minutes or 1)
+            logger.info(f"[BiometricScheduler] Auto-scheduled {len(active_configs)} biometric device(s).")
+        finally:
+            sched_db.close()
+    except Exception as se:
+        logger.warning(f"[BiometricScheduler] Startup init warning: {se}")
+
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth_router, prefix="/api/v1")
@@ -352,7 +372,9 @@ app.include_router(modules_router, prefix="/api/v1")
 app.include_router(ticket_router, prefix="/api/v1")
 
 # ── Biometric Module (isolated, additive) ─────────────────────────────────────
+from app.routers.biometric.adms import router as adms_push_root_router
 app.include_router(biometric_router, prefix="/api/v1")
+app.include_router(adms_push_root_router)
 
 
 @app.get("/", tags=["General"])

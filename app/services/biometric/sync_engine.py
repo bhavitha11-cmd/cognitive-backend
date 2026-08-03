@@ -7,13 +7,14 @@ Design:
   3. Fetch records from connector
   4. Deduplicate against existing raw logs
   5. Persist new raw logs (immutable)
-  6. Resolve employee mappings
+  6. Resolve employee mappings (with fuzzy CET-prefix stripping)
   7. Normalize records
   8. Update checkpoint (for incremental sync)
   9. Update SyncHistory (SUCCESS/PARTIAL/FAILED)
   10. Update DeviceHealth
   11. Release Redis lock
 """
+import re
 import uuid
 import json
 import logging
@@ -134,30 +135,33 @@ class SyncEngine:
             if not to_dt:
                 to_dt = datetime.now(timezone.utc)
             if not from_dt:
-                # Use sync config lookback or default 24h
-                sync_config = self.db.scalar(
-                    select(BmSyncConfig).where(BmSyncConfig.device_id == device_id)
-                )
-                lookback_days = sync_config.lookback_days if sync_config else 1
-                
-                # For incremental: use last sync checkpoint
-                if sync_type == "INCREMENTAL" and sync_history:
-                    last_sync = self.db.scalar(
-                        select(BmSyncHistory)
-                        .where(
-                            BmSyncHistory.device_id == device_id,
-                            BmSyncHistory.status == "SUCCESS",
-                            BmSyncHistory.id != sync_history.id,
-                        )
-                        .order_by(BmSyncHistory.started_at.desc())
+                if sync_type in ("MANUAL", "FULL"):
+                    # For manual/full syncs, cover all records stored on device
+                    from_dt = datetime(2000, 1, 1, tzinfo=timezone.utc)
+                else:
+                    sync_config = self.db.scalar(
+                        select(BmSyncConfig).where(BmSyncConfig.device_id == device_id)
                     )
-                    if last_sync and last_sync.checkpoint_data:
-                        checkpoint = last_sync.checkpoint_data
-                        if "last_punch_timestamp" in checkpoint:
-                            from_dt = datetime.fromisoformat(checkpoint["last_punch_timestamp"])
-                
-                if not from_dt:
-                    from_dt = to_dt - timedelta(days=lookback_days)
+                    lookback_days = sync_config.lookback_days if sync_config else 7
+                    
+                    # For incremental: use last sync checkpoint
+                    if sync_type == "INCREMENTAL" and sync_history:
+                        last_sync = self.db.scalar(
+                            select(BmSyncHistory)
+                            .where(
+                                BmSyncHistory.device_id == device_id,
+                                BmSyncHistory.status == "SUCCESS",
+                                BmSyncHistory.id != sync_history.id,
+                            )
+                            .order_by(BmSyncHistory.started_at.desc())
+                        )
+                        if last_sync and last_sync.checkpoint_data:
+                            checkpoint = last_sync.checkpoint_data
+                            if "last_punch_timestamp" in checkpoint:
+                                from_dt = datetime.fromisoformat(checkpoint["last_punch_timestamp"])
+                    
+                    if not from_dt:
+                        from_dt = to_dt - timedelta(days=lookback_days)
             
             # Get connection profile and create connector
             profile_service = ConnectionProfileService(self.db)
@@ -205,14 +209,8 @@ class SyncEngine:
                         result.duplicates_found += 1
                         continue
                     
-                    # Find employee mapping
-                    mapping = self.db.scalar(
-                        select(BmEmployeeMapping).where(
-                            BmEmployeeMapping.device_id == device_id,
-                            BmEmployeeMapping.biometric_user_id == record.device_user_id,
-                            BmEmployeeMapping.is_active == True,
-                        )
-                    )
+                    # Find employee mapping (try exact match first, then numeric-only fallback)
+                    mapping = self._find_employee_mapping(device_id, record.device_user_id)
                     
                     # Create raw log (immutable)
                     raw_log = BmRawLog(
@@ -305,6 +303,55 @@ class SyncEngine:
         
         return result
     
+    def _find_employee_mapping(
+        self,
+        device_id: uuid.UUID,
+        device_user_id: str,
+    ) -> Optional[BmEmployeeMapping]:
+        """
+        Find an employee mapping for the given device user ID.
+        
+        Strategy:
+          1. Try exact match (e.g. '030', 'CET030')
+          2. Strip any leading alphabetic prefix (e.g. 'CET030' -> '030') and retry
+          3. Zero-pad a pure numeric ID and retry (e.g. '4' -> '004')
+        This handles devices that encode user IDs differently across models.
+        """
+        def _lookup(user_id: str) -> Optional[BmEmployeeMapping]:
+            return self.db.scalar(
+                select(BmEmployeeMapping).where(
+                    BmEmployeeMapping.device_id == device_id,
+                    BmEmployeeMapping.biometric_user_id == user_id,
+                    BmEmployeeMapping.is_active == True,
+                )
+            )
+        
+        # 1. Exact match
+        mapping = _lookup(device_user_id)
+        if mapping:
+            return mapping
+        
+        # 2. Strip alphabetic prefix: 'CET030' -> '030'
+        stripped = re.sub(r'^[A-Za-z]+', '', device_user_id).lstrip('0') or '0'
+        stripped_padded = stripped.zfill(3)  # e.g. '30' -> '030'
+        if stripped_padded != device_user_id:
+            mapping = _lookup(stripped_padded)
+            if mapping:
+                return mapping
+            # also try without padding
+            if stripped != device_user_id:
+                mapping = _lookup(stripped)
+                if mapping:
+                    return mapping
+        
+        # 3. Try zero-padded numeric
+        if device_user_id.isdigit():
+            mapping = _lookup(device_user_id.zfill(3))
+            if mapping:
+                return mapping
+        
+        return None
+
     def _update_device_health(self, device_id: uuid.UUID, status: str, error: Optional[str]) -> None:
         """Update or create device health record."""
         health = self.db.scalar(

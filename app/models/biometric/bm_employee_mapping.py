@@ -28,4 +28,22 @@ class BmEmployeeMapping(Base):
         UniqueConstraint("device_id", "biometric_user_id", name="uq_bm_mapping_device_user"),
     )
 
-    device: Mapped["BmDevice"] = relationship("BmDevice", back_populates="employee_mappings")
+    employee: Mapped["Employee"] = relationship("Employee", foreign_keys=[employee_id], lazy="joined")
+    device: Mapped["BmDevice"] = relationship("BmDevice", back_populates="employee_mappings", lazy="joined")
+
+    @property
+    def employee_name(self) -> str | None:
+        if self.employee:
+            first = (self.employee.first_name or "").strip()
+            last = (self.employee.last_name or "").strip()
+            name = f"{first} {last}".strip()
+            return name if name else self.employee.employee_code
+        return None
+
+    @property
+    def employee_code(self) -> str | None:
+        return self.employee.employee_code if self.employee else None
+
+    @property
+    def device_name(self) -> str | None:
+        return self.device.device_name if self.device else None

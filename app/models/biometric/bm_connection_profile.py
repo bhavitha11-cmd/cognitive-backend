@@ -23,3 +23,22 @@ class BmConnectionProfile(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     device: Mapped["BmDevice"] = relationship("BmDevice", back_populates="connection_profiles")
+
+    @property
+    def config_summary(self) -> dict:
+        if not self.config_encrypted:
+            return {}
+        try:
+            from app.core.encryption import decrypt_value
+            import json
+            decrypted_str = decrypt_value(self.config_encrypted)
+            data = json.loads(decrypted_str)
+            if isinstance(data, dict):
+                for k in list(data.keys()):
+                    if 'password' in k.lower() or 'secret' in k.lower():
+                        data[k] = '****'
+                return data
+            return {}
+        except Exception:
+            return {}
+

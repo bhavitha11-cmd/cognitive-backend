@@ -1,7 +1,8 @@
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.database.session import get_db
 from app.dependencies import get_current_user
 from app.services.biometric.employee_mapping_service import EmployeeMappingService
@@ -43,10 +44,20 @@ def create_mapping(
     svc: EmployeeMappingService = Depends(_get_service),
 ):
     try:
-        mapping = svc.create_mapping(payload.model_dump())
+        mapping = svc.create_mapping(
+            employee_id=payload.employee_id,
+            device_id=payload.device_id,
+            biometric_user_id=payload.biometric_user_id,
+            method=payload.mapping_method,
+        )
         return mapping
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A mapping for this employee-device or biometric-user-device pair already exists.",
+        )
 
 @router.post("/bulk", status_code=200)
 def bulk_mapping(
@@ -93,5 +104,5 @@ def deactivate_mapping(
     _=Depends(get_current_user),
     svc: EmployeeMappingService = Depends(_get_service),
 ):
-    if not svc.deactivate_mapping(mapping_id):
+    if not svc.delete_mapping(mapping_id):
         raise HTTPException(status_code=404, detail="Mapping not found")
