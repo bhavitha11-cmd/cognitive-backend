@@ -279,7 +279,10 @@ class ESSLDirectConnector(BiometricConnector):
                                 h = h << 1
                         val = ((h & 0xFFFFFFFF) ^ self._session_id) & 0xFFFFFFFF
                         pwd_data = struct.pack('<I', val)
-                        self._send_command(1102, pwd_data)
+                        try:
+                            self._send_command(1102, pwd_data)
+                        except Exception as pwd_send_err:
+                            logger.warning(f"[eSSL] Password command failed (bypassing): {pwd_send_err}")
                     except Exception as auth_err:
                         logger.warning(f"[eSSL] Password auth warning: {auth_err}")
                 return
@@ -324,9 +327,78 @@ class ESSLDirectConnector(BiometricConnector):
         last_id: Optional[str] = None,
     ) -> list[RawAttendanceRecord]:
         """Fetch attendance records for the specified period."""
-        self._ensure_authenticated()
-        
         records = []
+        
+        # Primary Strategy: Use pyzk for 100% complete and reliable data stream
+        try:
+            from zk import ZK
+            from app.core.org_time import ORG_TZ
+
+            pwd_int = 0
+            try:
+                pwd_int = int(self.password) if self.password and self.password != "0" else 0
+            except ValueError:
+                pwd_int = 0
+
+            try:
+                if pwd_int > 0:
+                    zk = ZK(self.ip_address, port=self.port, timeout=self.timeout, password=pwd_int)
+                    conn = zk.connect()
+                else:
+                    zk = ZK(self.ip_address, port=self.port, timeout=self.timeout)
+                    conn = zk.connect()
+            except Exception as conn_err:
+                logger.warning(f"[eSSL/pyzk] Password connection failed ({conn_err}), retrying without password...")
+                zk = ZK(self.ip_address, port=self.port, timeout=self.timeout)
+                conn = zk.connect()
+            try:
+                raw_atts = conn.get_attendance()
+                for att in raw_atts:
+                    if not att.timestamp or not att.user_id:
+                        continue
+                    
+                    user_id_str = str(att.user_id).strip()
+                    
+                    # Convert naive timestamp to ORG_TZ and then UTC
+                    local_dt = att.timestamp.replace(tzinfo=ORG_TZ) if att.timestamp.tzinfo is None else att.timestamp.astimezone(ORG_TZ)
+                    utc_dt = local_dt.astimezone(timezone.utc)
+
+                    if from_dt and to_dt:
+                        f_dt = from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)
+                        t_dt = to_dt if to_dt.tzinfo else to_dt.replace(tzinfo=timezone.utc)
+                        if not (f_dt <= utc_dt <= t_dt):
+                            continue
+
+                    punch_type_str = "OUT" if att.punch in (1, 4) else "IN"
+                    verify_type_map = {0: "FP", 1: "FP", 2: "CARD", 3: "PIN", 4: "FACE", 6: "FACE", 7: "PALM", 15: "PALM"}
+                    verify_str = verify_type_map.get(att.status, "FP")
+
+                    records.append(
+                        RawAttendanceRecord(
+                            device_user_id=user_id_str,
+                            punch_timestamp=utc_dt,
+                            verification_type=verify_str,
+                            punch_type=punch_type_str,
+                            raw_data={
+                                "user_id": user_id_str,
+                                "timestamp": att.timestamp.isoformat(),
+                                "status": att.status,
+                                "punch": att.punch,
+                            }
+                        )
+                    )
+            finally:
+                try:
+                    conn.disconnect()
+                except Exception:
+                    pass
+            logger.info(f"[eSSL/pyzk] Successfully fetched {len(records)} attendance records from {self.ip_address}")
+            return records
+        except Exception as pyzk_err:
+            logger.warning(f"[eSSL/pyzk] pyzk fetch failed ({pyzk_err}), falling back to socket protocol")
+
+        # Fallback Strategy: Binary socket protocol
+        self._ensure_authenticated()
         try:
             # 1. Send CMD_GET_ATTLOG (13)
             self._reply_id = (self._reply_id + 1) & 0xFFFF

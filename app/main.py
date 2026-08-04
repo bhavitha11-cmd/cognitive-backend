@@ -318,14 +318,15 @@ def on_startup():
     try:
         from app.services.biometric.scheduler_service import get_biometric_scheduler
         from app.models.biometric.bm_sync_config import BmSyncConfig
+        from sqlalchemy import select
         scheduler = get_biometric_scheduler()
         scheduler.start()
 
         sched_db = SessionLocal()
         try:
-            active_configs = sched_db.scalars(
+            active_configs = list(sched_db.scalars(
                 select(BmSyncConfig).where(BmSyncConfig.is_auto_sync == True, BmSyncConfig.is_active == True)
-            ).all()
+            ).all())
             for cfg in active_configs:
                 scheduler.schedule_device(cfg.device_id, cfg.sync_interval_minutes or 1)
             logger.info(f"[BiometricScheduler] Auto-scheduled {len(active_configs)} biometric device(s).")

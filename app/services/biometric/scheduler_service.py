@@ -28,13 +28,8 @@ class BiometricScheduler:
                 from apscheduler.executors.pool import ThreadPoolExecutor
                 from app.core.config import settings
                 
-                # Try Redis job store for persistence
-                try:
-                    jobstores = {
-                        'default': RedisJobStore(url=settings.REDIS_URL, db=1)
-                    }
-                except Exception:
-                    jobstores = {}  # Fall back to in-memory
+                from apscheduler.jobstores.memory import MemoryJobStore
+                jobstores = {'default': MemoryJobStore()}
                 
                 executors = {'default': ThreadPoolExecutor(20)}
                 job_defaults = {
@@ -48,8 +43,8 @@ class BiometricScheduler:
                     executors=executors,
                     job_defaults=job_defaults,
                 )
-            except ImportError:
-                logger.warning("[BiometricScheduler] APScheduler not installed. Automated sync disabled.")
+            except ImportError as imp_err:
+                logger.warning(f"[BiometricScheduler] APScheduler not installed ({imp_err}). Automated sync disabled.")
         return self._scheduler
     
     def start(self) -> None:

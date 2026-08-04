@@ -32,6 +32,21 @@ class SyncHistoryService:
         if status:
             q = q.where(BmSyncHistory.status == status)
             
+        # Auto-cleanup stale RUNNING records older than 3 minutes
+        from datetime import datetime, timezone, timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=3)
+        stale_records = list(self.db.scalars(
+            select(BmSyncHistory).where(
+                BmSyncHistory.status == "RUNNING",
+                BmSyncHistory.started_at < cutoff
+            )
+        ).all())
+        if stale_records:
+            for s in stale_records:
+                s.status = "CANCELLED"
+                s.error_message = "Sync timed out or process was restarted"
+            self.db.commit()
+
         total = self.db.scalar(select(func.count()).select_from(q.subquery())) or 0
         q = q.order_by(BmSyncHistory.started_at.desc()).offset((page - 1) * page_size).limit(page_size)
         

@@ -104,18 +104,62 @@ class NormalizationService:
     ) -> NormalizationResult:
         """Normalize a batch of raw logs."""
         result = NormalizationResult()
+        if not raw_log_ids:
+            return result
         
+        # Pre-fetch existing normalized raw_log_ids
+        existing_normalized_map = {
+            n.raw_log_id: n for n in self.db.scalars(
+                select(BmNormalizedLog).where(BmNormalizedLog.raw_log_id.in_(raw_log_ids))
+            ).all()
+        }
+        
+        # Pre-fetch employee mappings
         raw_logs = list(self.db.scalars(
             select(BmRawLog).where(BmRawLog.id.in_(raw_log_ids))
         ).all())
         
+        mapping_ids = [r.employee_mapping_id for r in raw_logs if r.employee_mapping_id]
+        mappings_map = {}
+        if mapping_ids:
+            mappings_map = {
+                m.id: m for m in self.db.scalars(
+                    select(BmEmployeeMapping).where(BmEmployeeMapping.id.in_(mapping_ids))
+                ).all()
+            }
+        
         for raw_log in raw_logs:
             try:
-                normalized = self.normalize_raw_log(raw_log)
-                if normalized:
+                if raw_log.is_duplicate:
+                    result.skipped += 1
+                    continue
+                
+                mapping = mappings_map.get(raw_log.employee_mapping_id) if raw_log.employee_mapping_id else None
+                employee_id = mapping.employee_id if (mapping and mapping.is_active) else None
+                
+                normalized_punch_type = self._normalize_punch_type(raw_log.punch_type, raw_log.verification_type)
+                status = "PENDING" if employee_id else "UNMAPPED"
+                
+                existing = existing_normalized_map.get(raw_log.id)
+                if existing:
+                    if existing.employee_id != employee_id or existing.processing_status != status:
+                        existing.employee_id = employee_id
+                        existing.processing_status = status
+                        existing.punch_type = normalized_punch_type
+                        self.db.add(existing)
                     result.normalized += 1
                 else:
-                    result.skipped += 1
+                    normalized = BmNormalizedLog(
+                        raw_log_id=raw_log.id,
+                        employee_id=employee_id,
+                        device_id=raw_log.device_id,
+                        punch_timestamp=raw_log.punch_timestamp,
+                        punch_type=normalized_punch_type,
+                        verification_type=raw_log.verification_type,
+                        processing_status=status,
+                    )
+                    self.db.add(normalized)
+                    result.normalized += 1
             except Exception as e:
                 result.errors += 1
                 result.error_details.append({"raw_log_id": str(raw_log.id), "error": str(e)})

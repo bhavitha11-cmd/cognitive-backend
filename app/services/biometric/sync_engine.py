@@ -188,6 +188,14 @@ class SyncEngine:
             )
             batch_size = sync_cfg.batch_size if sync_cfg else 500
             
+            # Pre-fetch existing raw log keys for instant deduplication
+            existing_keys = set(
+                self.db.execute(
+                    select(BmRawLog.device_user_id, BmRawLog.punch_timestamp)
+                    .where(BmRawLog.device_id == device_id)
+                ).all()
+            )
+            
             # Process in batches
             new_raw_log_ids = []
             last_punch_timestamp = None
@@ -196,16 +204,8 @@ class SyncEngine:
                 batch = raw_records[i:i + batch_size]
                 
                 for record in batch:
-                    # Check for duplicate
-                    existing = self.db.scalar(
-                        select(BmRawLog).where(
-                            BmRawLog.device_id == device_id,
-                            BmRawLog.device_user_id == record.device_user_id,
-                            BmRawLog.punch_timestamp == record.punch_timestamp,
-                        )
-                    )
-                    
-                    if existing:
+                    # Check for duplicate via fast in-memory set
+                    if (record.device_user_id, record.punch_timestamp) in existing_keys:
                         result.duplicates_found += 1
                         continue
                     
@@ -326,27 +326,31 @@ class SyncEngine:
                 )
             )
         
-        # 1. Exact match
-        mapping = _lookup(device_user_id)
-        if mapping:
-            return mapping
-        
-        # 2. Strip alphabetic prefix: 'CET030' -> '030'
+        digits = re.sub(r'\D', '', device_user_id)
+        candidates = []
+
+        # 1. Direct raw string match
+        candidates.append(device_user_id)
+
+        # 2. CET prefix variations (e.g. '34' -> 'CET034', 'CET34')
+        if digits:
+            candidates.append(f"CET{digits.zfill(3)}")
+            candidates.append(f"CET{digits}")
+            candidates.append(f"CET{device_user_id}")
+            candidates.append(digits.zfill(3))
+            candidates.append(digits)
+
+        # 3. Stripped alphabetic prefix
         stripped = re.sub(r'^[A-Za-z]+', '', device_user_id).lstrip('0') or '0'
-        stripped_padded = stripped.zfill(3)  # e.g. '30' -> '030'
-        if stripped_padded != device_user_id:
-            mapping = _lookup(stripped_padded)
-            if mapping:
-                return mapping
-            # also try without padding
-            if stripped != device_user_id:
-                mapping = _lookup(stripped)
-                if mapping:
-                    return mapping
-        
-        # 3. Try zero-padded numeric
-        if device_user_id.isdigit():
-            mapping = _lookup(device_user_id.zfill(3))
+        candidates.append(stripped.zfill(3))
+        candidates.append(stripped)
+
+        # Deduplicate candidates preserving order
+        seen = set()
+        unique_candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+
+        for cand in unique_candidates:
+            mapping = _lookup(cand)
             if mapping:
                 return mapping
         

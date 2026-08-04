@@ -62,10 +62,19 @@ class LiveAttendanceService:
             if log.employee_id:
                 emp_logs.setdefault(log.employee_id, []).append(log)
 
+        # Fetch all active employees so full company workforce is visible
+        all_emps = self.db.scalars(
+            select(Employee).where(Employee.is_active == True)
+        ).all()
+
         result = []
         target_work_seconds = 8 * 3600  # 8 hours policy = 28,800 seconds
 
+        # Track processed employee IDs
+        processed_emp_ids = set()
+
         for emp_id, elogs in emp_logs.items():
+            processed_emp_ids.add(emp_id)
             emp = elogs[0].employee if elogs[0].employee else self.db.get(Employee, emp_id)
             device = elogs[-1].device
 
@@ -150,6 +159,37 @@ class LiveAttendanceService:
                 "verification_mode": last_punch_log.verification_type,
                 "branch": branch,
             })
+
+        # Add employees who have not punched in today as ABSENT / NOT IN YET
+        for emp in all_emps:
+            if emp.id not in processed_emp_ids:
+                first = (emp.first_name or "").strip()
+                last = (emp.last_name or "").strip()
+                emp_name = f"{first} {last}".strip() or emp.employee_code or "Unknown"
+                result.append({
+                    "employee_id": str(emp.id),
+                    "employee_name": emp_name,
+                    "employee_code": emp.employee_code or "",
+                    "department_name": None,
+                    "current_status": "ABSENT",
+                    "first_in_time": None,
+                    "last_punch_time": None,
+                    "last_punch_type": None,
+                    "total_in_seconds": 0,
+                    "total_in_time_formatted": "0h 00m",
+                    "total_out_seconds": 0,
+                    "total_out_time_formatted": "0h 00m",
+                    "remaining_seconds": target_work_seconds,
+                    "remaining_time_formatted": "8h 00m remaining",
+                    "target_work_hours": 8.0,
+                    "is_shift_completed": False,
+                    "today_punches_count": 0,
+                    "today_punches_list": [],
+                    "device_name": "N/A",
+                    "device_id": None,
+                    "verification_mode": None,
+                    "branch": branch,
+                })
 
         result.sort(key=lambda x: x["last_punch_time"] or "", reverse=True)
         return result
