@@ -338,14 +338,30 @@ class LeaveService:
         self, employee_id: UUID, year: int | None = None
     ) -> list[LeaveBalanceResponse]:
         year = year or _current_year()
-        balances = self.db.scalars(
-            select(LeaveBalance)
-            .where(
-                LeaveBalance.employee_id == employee_id,
-                LeaveBalance.year == year,
-            )
-            .order_by(LeaveBalance.leave_type_id)
-        ).all()
+        
+        # Check if we have any balances for this employee in this year
+        balances_query = select(LeaveBalance).where(
+            LeaveBalance.employee_id == employee_id,
+            LeaveBalance.year == year,
+        )
+        balances = self.db.scalars(balances_query).all()
+        
+        if not balances:
+            # Check if there are active leave types
+            active_types_count = self.db.scalar(
+                select(func.count(LeaveType.id)).where(LeaveType.is_active.is_(True))
+            ) or 0
+            if active_types_count > 0:
+                try:
+                    # Initialize them automatically
+                    self.initialize_balances(employee_id, year=year)
+                    # Re-query
+                    balances = self.db.scalars(balances_query).all()
+                except Exception:
+                    pass
+
+        # Sort the balances by leave_type_id to maintain consistent order
+        balances = sorted(balances, key=lambda b: b.leave_type_id)
         return [_build_balance_response(b) for b in balances]
 
     def initialize_balances(

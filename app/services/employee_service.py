@@ -237,27 +237,70 @@ class EmployeeService:
         team_id = data.team_id
         is_team_lead = data.is_team_lead
 
-        employee_data = data.model_dump(exclude={"password", "role_ids", "is_department_head", "team_id", "is_team_lead"})
+        employee_data = data.model_dump(exclude={"password", "role_ids", "is_department_head", "team_id", "is_team_lead", "designation_name"})
         employee_data["account_status"] = status
         employee_data["password_hash"] = get_password_hash(data.password)
         employee_data["must_change_password"] = True
+
+        if data.designation_name and data.designation_name.strip():
+            from app.models.designation import Designation
+            from sqlalchemy import func as _func
+            import re
+            name_stripped = data.designation_name.strip()
+            stmt = select(Designation).where(_func.lower(Designation.name) == _func.lower(name_stripped))
+            existing = self.db.scalar(stmt)
+            if existing:
+                employee_data["designation_id"] = existing.id
+            else:
+                base_code = re.sub(r'[^A-Z0-9_]', '', name_stripped.upper().replace(' ', '_'))[:16]
+                if not base_code:
+                    base_code = "DSG"
+                code = f"DSG-{base_code}"
+                check_code = self.db.scalar(select(Designation).where(Designation.code == code))
+                counter = 1
+                while check_code:
+                    code = f"DSG-{base_code[:12]}_{counter}"
+                    check_code = self.db.scalar(select(Designation).where(Designation.code == code))
+                    counter += 1
+                new_dsg = Designation(
+                    name=name_stripped,
+                    code=code,
+                    level=1,
+                    is_active=True
+                )
+                self.db.add(new_dsg)
+                self.db.flush()
+                employee_data["designation_id"] = new_dsg.id
 
         if not employee_data.get("display_name"):
             employee_data["display_name"] = f"{data.first_name} {data.last_name}".strip()
 
         try:
             from sqlalchemy.exc import IntegrityError as _IntegrityError
-            for _attempt in range(3):
-                employee_data["employee_code"] = self._generate_employee_code()
+            if not employee_data.get("employee_code"):
+                for _attempt in range(3):
+                    employee_data["employee_code"] = self._generate_employee_code()
+                    employee = Employee(**employee_data)
+                    self.db.add(employee)
+                    try:
+                        self.db.flush()  # get ID without committing
+                        break
+                    except _IntegrityError as _ie:
+                        self.db.rollback()
+                        if "employee_code" in str(_ie.orig) and _attempt < 2:
+                            continue
+                        raise
+            else:
+                if self.repo.get_by_employee_code(employee_data["employee_code"]):
+                    raise ValueError(f"Employee with employee code '{employee_data['employee_code']}' already exists")
                 employee = Employee(**employee_data)
                 self.db.add(employee)
                 try:
-                    self.db.flush()  # get ID without committing
-                    break
+                    self.db.flush()
                 except _IntegrityError as _ie:
                     self.db.rollback()
-                    if "employee_code" in str(_ie.orig) and _attempt < 2:
-                        continue
+                    if "employee_code" in str(_ie.orig):
+                        raise ValueError(f"Employee with employee code '{employee_data['employee_code']}' already exists")
                     raise
 
             for role_id in data.role_ids:
@@ -303,6 +346,16 @@ class EmployeeService:
             )
             self.db.commit()
             self.db.refresh(employee)
+
+            # Initialize leave balances for the new employee
+            try:
+                from app.services.leave_service import LeaveService
+                leave_service = LeaveService(self.db, current_user_id=self.current_user_id)
+                yr = employee.date_of_joining.year if employee.date_of_joining else datetime.now(timezone.utc).year
+                leave_service.initialize_balances(employee.id, year=yr)
+            except Exception:
+                pass
+
             # Invalidate hierarchy cache on successful create
             from app.core.hierarchy_cache import HierarchyCache
             HierarchyCache.get_instance().invalidate()
@@ -319,6 +372,40 @@ class EmployeeService:
 
         update_data = data.model_dump(exclude_unset=True)
 
+        if "designation_name" in update_data:
+            name_val = update_data.pop("designation_name")
+            if name_val and name_val.strip():
+                from app.models.designation import Designation
+                from sqlalchemy import func as _func
+                import re
+                name_stripped = name_val.strip()
+                stmt = select(Designation).where(_func.lower(Designation.name) == _func.lower(name_stripped))
+                existing = self.db.scalar(stmt)
+                if existing:
+                    update_data["designation_id"] = existing.id
+                else:
+                    base_code = re.sub(r'[^A-Z0-9_]', '', name_stripped.upper().replace(' ', '_'))[:16]
+                    if not base_code:
+                        base_code = "DSG"
+                    code = f"DSG-{base_code}"
+                    check_code = self.db.scalar(select(Designation).where(Designation.code == code))
+                    counter = 1
+                    while check_code:
+                        code = f"DSG-{base_code[:12]}_{counter}"
+                        check_code = self.db.scalar(select(Designation).where(Designation.code == code))
+                        counter += 1
+                    new_dsg = Designation(
+                        name=name_stripped,
+                        code=code,
+                        level=1,
+                        is_active=True
+                    )
+                    self.db.add(new_dsg)
+                    self.db.flush()
+                    update_data["designation_id"] = new_dsg.id
+            else:
+                update_data["designation_id"] = None
+
         if "email" in update_data and update_data["email"] != employee.email:
             existing = self.repo.get_by_email(update_data["email"])
             if existing and existing.id != id:
@@ -328,6 +415,11 @@ class EmployeeService:
             existing = self.repo.get_by_username(update_data["username"])
             if existing and existing.id != id:
                 raise ValueError(f"Employee with username '{update_data['username']}' already exists")
+
+        if "employee_code" in update_data and update_data["employee_code"] != employee.employee_code:
+            existing = self.repo.get_by_employee_code(update_data["employee_code"])
+            if existing and existing.id != id:
+                raise ValueError(f"Employee with employee code '{update_data['employee_code']}' already exists")
 
         if "reporting_manager_id" in update_data:
             new_mgr = update_data["reporting_manager_id"]

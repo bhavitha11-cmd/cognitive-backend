@@ -41,6 +41,7 @@ def _validate_phone(v: str | None) -> str | None:
 # ── request schemas ───────────────────────────────────────────────────────────
 
 class EmployeeCreate(BaseModel):
+    employee_code: str = Field(..., min_length=1, max_length=20)
     first_name: str = Field(..., min_length=1, max_length=100)
     middle_name: str | None = Field(None, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
@@ -58,6 +59,7 @@ class EmployeeCreate(BaseModel):
     profile_photo_url: str | None = Field(None, max_length=500)
     department_id: uuid.UUID | None = None
     designation_id: uuid.UUID | None = None
+    designation_name: str | None = None
     role_ids: list[uuid.UUID] = Field(default=[], max_length=20)
     reporting_manager_id: uuid.UUID | None = None
     date_of_joining: date | None = None
@@ -117,6 +119,7 @@ class EmployeeCreate(BaseModel):
 
 
 class EmployeeUpdate(BaseModel):
+    employee_code: str | None = Field(None, min_length=1, max_length=20)
     first_name: str | None = Field(None, min_length=1, max_length=100)
     middle_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, min_length=1, max_length=100)
@@ -134,6 +137,7 @@ class EmployeeUpdate(BaseModel):
     profile_photo_url: str | None = Field(None, max_length=500)
     department_id: uuid.UUID | None = None
     designation_id: uuid.UUID | None = None
+    designation_name: str | None = None
     role_ids: list[uuid.UUID] | None = None
     reporting_manager_id: uuid.UUID | None = None
     date_of_joining: date | None = None
