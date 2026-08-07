@@ -29,6 +29,45 @@ router = APIRouter(
 )
 
 
+def _summarize_attendance_correction(
+    service: ApprovalService, target_id: uuid.UUID
+) -> tuple[str | None, str | None, str | None]:
+    """Resolves (requester_name, requester_code, details_summary) for an
+    ATTENDANCE_CORRECTION ApprovalInstance by looking up the underlying
+    MissedClockinRequest or MissedClockoutRequest — module_type alone doesn't
+    distinguish the two since they share one combined workflow."""
+    from app.models.missed_clockin_request import MissedClockinRequest
+    from app.models.missed_clockout_request import MissedClockoutRequest
+
+    requester_name: str | None = None
+    requester_code: str | None = None
+    details_summary: str | None = None
+
+    mc_in = service.db.get(MissedClockinRequest, target_id)
+    if mc_in:
+        emp = service.db.get(Employee, mc_in.employee_id)
+        if emp:
+            requester_name = f"{emp.first_name} {emp.last_name}"
+            requester_code = emp.employee_code
+        details_summary = (
+            f"Missed Clock-in on {mc_in.attendance_date} — requested "
+            f"{mc_in.requested_clock_in}. Reason: {mc_in.reason or 'No reason provided'}"
+        )
+        return requester_name, requester_code, details_summary
+
+    mc_out = service.db.get(MissedClockoutRequest, target_id)
+    if mc_out:
+        emp = service.db.get(Employee, mc_out.employee_id)
+        if emp:
+            requester_name = f"{emp.first_name} {emp.last_name}"
+            requester_code = emp.employee_code
+        details_summary = (
+            f"Missed Clock-out on {mc_out.attendance_date} — requested "
+            f"{mc_out.requested_clock_out}. Reason: {mc_out.reason or 'No reason provided'}"
+        )
+    return requester_name, requester_code, details_summary
+
+
 def _get_service(
     db: Session = Depends(get_db),
     current_user_id: str = Depends(get_current_user),
@@ -242,6 +281,10 @@ def get_pending_approvals(
                     f"Time Sheet ({te_obj.hours_spent} hrs) on {te_obj.date} "
                     f"for task {task_code} ({task_title}). Description: {te_obj.description or 'No description'}"
                 )
+        elif inst.module_type == "ATTENDANCE_CORRECTION":
+            requester_name, requester_code, details_summary = _summarize_attendance_correction(
+                service, inst.target_id
+            )
 
         app_role = service.db.get(Role, inst.approver_role_id)
         assigned_emp = (
@@ -349,6 +392,10 @@ def get_approval_history(
                     f"Time Sheet ({te_obj.hours_spent} hrs) on {te_obj.date} "
                     f"for task {task_code} ({task_title}). Description: {te_obj.description or 'No description'}"
                 )
+        elif inst.module_type == "ATTENDANCE_CORRECTION":
+            requester_name, requester_code, details_summary = _summarize_attendance_correction(
+                service, inst.target_id
+            )
 
         app_role = service.db.get(Role, inst.approver_role_id)
         assigned_emp = (

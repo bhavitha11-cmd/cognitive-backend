@@ -580,6 +580,14 @@ class ApprovalService:
             entry = self.db.get(TimeEntry, target_id)
             if entry:
                 return entry.employee_id
+        elif mod_upper == "ATTENDANCE_CORRECTION":
+            from app.models.missed_clockin_request import MissedClockinRequest
+            from app.models.missed_clockout_request import MissedClockoutRequest
+            req = self.db.get(MissedClockinRequest, target_id) or self.db.get(
+                MissedClockoutRequest, target_id
+            )
+            if req:
+                return req.employee_id
         raise ValueError(f"Unsupported module type '{module_type}' or target ID not found.")
 
     def _update_target_status(
@@ -630,6 +638,18 @@ class ApprovalService:
                 from app.services.time_entry_service import TimeEntryService
                 te_svc = TimeEntryService(self.db, actioned_by)
                 te_svc._recompute_task_actual_hours(entry.task_id)
+        elif mod_upper == "ATTENDANCE_CORRECTION":
+            from app.models.missed_clockin_request import MissedClockinRequest
+            from app.models.missed_clockout_request import MissedClockoutRequest
+            from app.services.attendance_service import AttendanceService
+            att_svc = AttendanceService(self.db, actioned_by)
+            req_in = self.db.get(MissedClockinRequest, target_id)
+            if req_in:
+                att_svc._finalize_missed_clockin_decision(req_in, status, actioned_by, comments)
+            else:
+                req_out = self.db.get(MissedClockoutRequest, target_id)
+                if req_out:
+                    att_svc._finalize_missed_clockout_decision(req_out, status, actioned_by, comments)
 
     def _recompute_leave_used(self, employee_id: uuid.UUID, leave_type_id: uuid.UUID, year: int) -> None:
         from app.models.leave_balance import LeaveBalance

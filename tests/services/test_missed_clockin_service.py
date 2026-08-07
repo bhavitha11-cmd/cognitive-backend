@@ -47,14 +47,18 @@ def make_mock_attendance_record(
 class TestMissedClockinRequest:
     # ── Submit Request ──────────────────────────────────────────────────────────
 
-    def test_submit_missed_clockin_success(self, attendance_service, mock_db):
+    def test_submit_missed_clockin_blocked_without_workflow(self, attendance_service, mock_db):
         mock_emp = make_mock_employee()
         mock_db.get.return_value = mock_emp
 
-        # Mock query return: no attendance record exists yet, no pending request exists
+        # Mock query return: no attendance record exists yet, no pending request exists,
+        # and no active ATTENDANCE_CORRECTION approval workflow is configured — submission
+        # must be blocked (mirrors LEAVE: no silent fallback to the old direct
+        # admin approve/reject endpoints).
         mock_db.scalars.return_value.first.side_effect = [
             None,  # No existing attendance record
             None,  # No existing pending request
+            None,  # No active ApprovalWorkflow for ATTENDANCE_CORRECTION
         ]
 
         req_time = datetime.now(timezone.utc) - timedelta(hours=1)
@@ -64,15 +68,10 @@ class TestMissedClockinRequest:
             reason="Forgot to mark login",
         )
 
-        res = attendance_service.submit_missed_clockin_request(TEST_EMPLOYEE_ID, data)
+        with pytest.raises(ValueError, match="No active approval workflow configured"):
+            attendance_service.submit_missed_clockin_request(TEST_EMPLOYEE_ID, data)
 
-        assert res.employee_id == TEST_EMPLOYEE_ID
-        assert res.attendance_date == date(2026, 7, 9)
-        assert res.requested_clock_in == req_time
-        assert res.status == "PENDING"
-        assert res.reason == "Forgot to mark login"
-        assert mock_db.add.called
-        assert mock_db.commit.called
+        assert mock_db.rollback.called
 
     def test_submit_missed_clockin_already_clocked_in(self, attendance_service, mock_db):
         mock_emp = make_mock_employee()
@@ -136,11 +135,13 @@ class TestMissedClockinRequest:
         )
 
         # Mock db queries inside approve:
-        # 1. select(AttendanceRule) to get rule_obj
-        # 2. select(Attendance) in _get_or_create_record
+        # 1. select(ApprovalInstance.id) guard: no active engine-owned flow for this request
+        # 2. select(AttendanceRule) to get rule_obj
+        # 3. select(Attendance) in _get_or_create_record
         mock_db.scalars.return_value.first.side_effect = [
-            rule,  # First query: get rule
-            None,  # Second query: get existing attendance record (returns None, meaning create new)
+            None,  # Guard: no ApprovalInstance already tracking this request
+            rule,  # Get rule
+            None,  # Get existing attendance record (returns None, meaning create new)
         ]
 
         res = attendance_service.approve_missed_clockin_request(req.id, review_notes="Approved by admin")
@@ -186,6 +187,8 @@ class TestMissedClockinRequest:
         req.employee = make_mock_employee(id=TEST_EMPLOYEE_ID)
 
         mock_db.get.return_value = req
+        # Guard: no ApprovalInstance already tracking this request
+        mock_db.scalars.return_value.first.return_value = None
 
         res = attendance_service.reject_missed_clockin_request(req.id, review_notes="Rejected")
 

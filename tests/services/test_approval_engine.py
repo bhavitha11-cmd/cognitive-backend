@@ -998,6 +998,154 @@ def test_timesheet_approval_workflow(db_session: Session, seed_data):
     assert float(task_obj.actual_hours) == 5.0
 
 
+def test_attendance_correction_approval_workflow(db_session: Session, seed_data):
+    """Missed clock-in AND missed clock-out both route through the same single
+    combined ATTENDANCE_CORRECTION workflow (per the user's decision to not split
+    them into two separately-configurable module types)."""
+    from app.models.attendance import Attendance
+    from app.models.missed_clockin_request import MissedClockinRequest
+    from app.models.missed_clockout_request import MissedClockoutRequest
+    from app.schemas.attendance import MissedClockinRequestCreate, MissedClockoutRequestCreate
+    from app.services.attendance_service import AttendanceService
 
+    emp = seed_data["employees"]["EMP"]
+    tl = seed_data["employees"]["TL"]
+    role_emp = seed_data["roles"]["EMP"]
+    role_tl = seed_data["roles"]["TL"]
+
+    approval_service = ApprovalService(db_session)
+    attendance_service = AttendanceService(db_session, current_user_id=emp.id)
+
+    # 1. Create and activate a single combined ATTENDANCE_CORRECTION workflow
+    wf = approval_service.create_workflow(name="Attendance Correction Workflow", module_type="ATTENDANCE_CORRECTION")
+    steps = [
+        {
+            "requester_role_id": role_emp.id,
+            "level": 1,
+            "approver_role_id": role_tl.id,
+            "resolution_scope": "REPORTING_HIERARCHY",
+        }
+    ]
+    approval_service.set_workflow_steps(wf.id, steps)
+    approval_service.activate_workflow(wf.id)
+
+    # 2. Submit a missed clock-in request
+    clockin_resp = attendance_service.submit_missed_clockin_request(
+        emp.id,
+        MissedClockinRequestCreate(
+            attendance_date=date(2026, 7, 9),
+            requested_clock_in=datetime(2026, 7, 9, 9, 5, tzinfo=timezone.utc),
+            reason="Forgot to clock in",
+        ),
+    )
+    assert clockin_resp.status == "PENDING"
+
+    # 3. Set up an existing clock-in so a missed clock-out request can be submitted too
+    existing_attendance = Attendance(
+        employee_id=emp.id,
+        date=date(2026, 7, 10),
+        clock_in=datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc),
+        status="PRESENT",
+    )
+    db_session.add(existing_attendance)
+    db_session.commit()
+
+    clockout_resp = attendance_service.submit_missed_clockout_request(
+        emp.id,
+        MissedClockoutRequestCreate(
+            attendance_date=date(2026, 7, 10),
+            requested_clock_out=datetime(2026, 7, 10, 18, 0, tzinfo=timezone.utc),
+            reason="Forgot to clock out",
+        ),
+    )
+    assert clockout_resp.status == "PENDING"
+
+    # 4. Both requests must land under the SAME workflow/module_type
+    instances = db_session.scalars(
+        select(ApprovalInstance).where(ApprovalInstance.module_type == "ATTENDANCE_CORRECTION")
+    ).all()
+    assert len(instances) == 2
+    assert {inst.target_id for inst in instances} == {clockin_resp.id, clockout_resp.id}
+    assert all(inst.workflow_id == wf.id for inst in instances)
+    assert all(inst.status == "PENDING" and inst.assigned_approver_id == tl.id for inst in instances)
+
+    clockin_instance = next(i for i in instances if i.target_id == clockin_resp.id)
+    clockout_instance = next(i for i in instances if i.target_id == clockout_resp.id)
+
+    # 5. Approve the missed clock-in — Attendance row should get clock_in applied
+    approval_service.submit_approval_action(
+        employee_id=tl.id, instance_id=clockin_instance.id, action="APPROVED", comments="Looks right"
+    )
+    db_session.expire_all()
+    clockin_req = db_session.get(MissedClockinRequest, clockin_resp.id)
+    assert clockin_req.status == "APPROVED"
+    applied_attendance = db_session.scalars(
+        select(Attendance).where(Attendance.employee_id == emp.id, Attendance.date == date(2026, 7, 9))
+    ).first()
+    assert applied_attendance is not None
+    assert applied_attendance.clock_in is not None
+
+    # 6. Reject the missed clock-out — its Attendance row must be left untouched
+    approval_service.submit_approval_action(
+        employee_id=tl.id, instance_id=clockout_instance.id, action="REJECTED", comments="Not valid"
+    )
+    db_session.expire_all()
+    clockout_req = db_session.get(MissedClockoutRequest, clockout_resp.id)
+    assert clockout_req.status == "REJECTED"
+    untouched_attendance = db_session.get(Attendance, existing_attendance.id)
+    assert untouched_attendance.clock_out is None
+
+
+def test_attendance_correction_submission_blocked_without_workflow(db_session: Session, seed_data):
+    """No active ATTENDANCE_CORRECTION workflow configured -> submission must be
+    blocked with a clear error, mirroring LEAVE's behavior (no silent fallback)."""
+    from app.models.attendance import Attendance
+    from app.models.missed_clockin_request import MissedClockinRequest
+    from app.schemas.attendance import MissedClockinRequestCreate, MissedClockoutRequestCreate
+    from app.services.attendance_service import AttendanceService
+
+    emp = seed_data["employees"]["EMP"]
+    attendance_service = AttendanceService(db_session, current_user_id=emp.id)
+
+    with pytest.raises(ValueError, match="No active approval workflow configured"):
+        attendance_service.submit_missed_clockin_request(
+            emp.id,
+            MissedClockinRequestCreate(
+                attendance_date=date(2026, 7, 9),
+                requested_clock_in=datetime(2026, 7, 9, 9, 5, tzinfo=timezone.utc),
+                reason="Forgot to clock in",
+            ),
+        )
+    # The failed clock-in submission must have rolled back cleanly (no orphaned
+    # PENDING row left behind for this employee/date).
+    assert (
+        db_session.scalars(
+            select(MissedClockinRequest).where(
+                MissedClockinRequest.employee_id == emp.id,
+                MissedClockinRequest.attendance_date == date(2026, 7, 9),
+            )
+        ).first()
+        is None
+    )
+
+    # Missed clock-out requires an existing clock-in on record for that date first.
+    existing_attendance = Attendance(
+        employee_id=emp.id,
+        date=date(2026, 7, 9),
+        clock_in=datetime(2026, 7, 9, 9, 0, tzinfo=timezone.utc),
+        status="PRESENT",
+    )
+    db_session.add(existing_attendance)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="No active approval workflow configured"):
+        attendance_service.submit_missed_clockout_request(
+            emp.id,
+            MissedClockoutRequestCreate(
+                attendance_date=date(2026, 7, 9),
+                requested_clock_out=datetime(2026, 7, 9, 18, 0, tzinfo=timezone.utc),
+                reason="Forgot to clock out",
+            ),
+        )
 
 

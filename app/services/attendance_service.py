@@ -692,6 +692,83 @@ class AttendanceService:
             created_at=req.created_at,
         )
 
+    def _guard_no_active_approval_flow(self, module_type: str, target_id: uuid.UUID) -> None:
+        """Blocks the direct admin approve/reject shortcut once a request has been
+        routed through the generic ApprovalService engine (i.e. a Settings-configured
+        workflow existed for this module at submission time), so the same request
+        can't be actioned twice through two different mechanisms."""
+        from app.models.approval import ApprovalInstance
+
+        existing = self.db.scalars(
+            select(ApprovalInstance.id).where(
+                ApprovalInstance.module_type == module_type,
+                ApprovalInstance.target_id == target_id,
+            )
+        ).first()
+        if existing:
+            raise ValueError(
+                "This request is being processed through the configured approval workflow. "
+                "Use the Approvals inbox to action it."
+            )
+
+    def _finalize_missed_clockout_decision(
+        self,
+        req: MissedClockoutRequest,
+        decision: str,
+        reviewer_id: uuid.UUID | None,
+        review_notes: str | None,
+    ) -> None:
+        """Applies an APPROVED/REJECTED decision to a missed clock-out request.
+        Shared by the direct admin approve/reject endpoints and by the generic
+        ApprovalService engine (called from `_update_target_status`) when the
+        ATTENDANCE_CORRECTION workflow is configured in Settings."""
+        if decision == "APPROVED":
+            rule_obj = self.db.scalars(select(AttendanceRule)).first()
+            if not rule_obj:
+                rule_obj = AttendanceRule()
+                self.db.add(rule_obj)
+                self.db.flush()
+
+            attendance = self.db.scalars(
+                select(Attendance).where(
+                    Attendance.employee_id == req.employee_id,
+                    Attendance.date == req.attendance_date,
+                )
+            ).first()
+            if attendance:
+                attendance.clock_out = req.requested_clock_out
+                attendance.notes = (
+                    (attendance.notes + "\n" if attendance.notes else "")
+                    + f"Clock-out approved (missed clockout request #{str(req.id)[:8]})"
+                )
+                self._apply_hours(attendance, rule_obj)
+                self._apply_half_day_status(attendance, rule_obj)
+
+        now = _now_utc()
+        req.status = decision
+        req.reviewed_by = reviewer_id
+        req.reviewed_at = now
+        req.review_notes = review_notes
+        self.db.flush()
+        self.db.refresh(req, attribute_names=["employee"])
+        AuditService.log(
+            self.db,
+            "missed_clockout_request",
+            req.id,
+            "APPROVE" if decision == "APPROVED" else "REJECT",
+            performed_by=reviewer_id,
+            new_value={
+                "employee_id": str(req.employee_id),
+                "attendance_date": str(req.attendance_date),
+                "review_notes": review_notes,
+                **(
+                    {"approved_clock_out": req.requested_clock_out.isoformat()}
+                    if decision == "APPROVED"
+                    else {}
+                ),
+            },
+        )
+
     def submit_missed_clockout_request(
         self, employee_id: uuid.UUID, data: MissedClockoutRequestCreate
     ) -> MissedClockoutRequestResponse:
@@ -758,6 +835,23 @@ class AttendanceService:
                     "reason": data.reason,
                 },
             )
+            # Route the request through the Settings-configured ATTENDANCE_CORRECTION
+            # approval workflow (same pattern as Leave/Timesheet). If no active workflow
+            # is configured, initialize_approval_flow raises ValueError and submission
+            # is blocked — the router turns this into a 400.
+            from app.services.approval_service import ApprovalService
+
+            approval_svc = ApprovalService(self.db, self.current_user_id)
+            flow_status = approval_svc.initialize_approval_flow(
+                "ATTENDANCE_CORRECTION", req.id, employee_id
+            )
+            if flow_status == "APPROVED":
+                self._finalize_missed_clockout_decision(
+                    req,
+                    "APPROVED",
+                    reviewer_id=None,
+                    review_notes="Auto-approved: no approver resolved in the configured workflow.",
+                )
             self.db.commit()
             self.db.refresh(req)
             self.db.refresh(req, attribute_names=["employee"])
@@ -804,49 +898,10 @@ class AttendanceService:
         if self.current_user_id is not None and req.employee_id == self.current_user_id:
             raise ValueError("You cannot approve your own missed clock-out request.")
 
-        rule_obj = self.db.scalars(select(AttendanceRule)).first()
-        if not rule_obj:
-            rule_obj = AttendanceRule()
-            self.db.add(rule_obj)
-            self.db.flush()
-
-        attendance = self.db.scalars(
-            select(Attendance).where(
-                Attendance.employee_id == req.employee_id,
-                Attendance.date == req.attendance_date,
-            )
-        ).first()
-        if attendance:
-            attendance.clock_out = req.requested_clock_out
-            attendance.notes = (
-                (attendance.notes + "\n" if attendance.notes else "")
-                + f"Clock-out approved by admin (missed clockout request #{str(req.id)[:8]})"
-            )
-            self._apply_hours(attendance, rule_obj)
-            self._apply_half_day_status(attendance, rule_obj)
-
-        now = _now_utc()
-        req.status = "APPROVED"
-        req.reviewed_by = self.current_user_id
-        req.reviewed_at = now
-        req.review_notes = review_notes
+        self._guard_no_active_approval_flow("ATTENDANCE_CORRECTION", req.id)
 
         try:
-            self.db.flush()
-            self.db.refresh(req, attribute_names=["employee"])
-            AuditService.log(
-                self.db,
-                "missed_clockout_request",
-                req.id,
-                "APPROVE",
-                performed_by=self.current_user_id,
-                new_value={
-                    "employee_id": str(req.employee_id),
-                    "attendance_date": str(req.attendance_date),
-                    "approved_clock_out": req.requested_clock_out.isoformat(),
-                    "review_notes": review_notes,
-                },
-            )
+            self._finalize_missed_clockout_decision(req, "APPROVED", self.current_user_id, review_notes)
             self.db.commit()
             self.db.refresh(req)
             self.db.refresh(req, attribute_names=["employee"])
@@ -867,27 +922,10 @@ class AttendanceService:
         if req.status != "PENDING":
             raise ValueError(f"Request is already {req.status}.")
 
-        now = _now_utc()
-        req.status = "REJECTED"
-        req.reviewed_by = self.current_user_id
-        req.reviewed_at = now
-        req.review_notes = review_notes
+        self._guard_no_active_approval_flow("ATTENDANCE_CORRECTION", req.id)
 
         try:
-            self.db.flush()
-            self.db.refresh(req, attribute_names=["employee"])
-            AuditService.log(
-                self.db,
-                "missed_clockout_request",
-                req.id,
-                "REJECT",
-                performed_by=self.current_user_id,
-                new_value={
-                    "employee_id": str(req.employee_id),
-                    "attendance_date": str(req.attendance_date),
-                    "review_notes": review_notes,
-                },
-            )
+            self._finalize_missed_clockout_decision(req, "REJECTED", self.current_user_id, review_notes)
             self.db.commit()
             self.db.refresh(req)
             self.db.refresh(req, attribute_names=["employee"])
@@ -920,6 +958,67 @@ class AttendanceService:
             reviewed_at=req.reviewed_at,
             review_notes=req.review_notes,
             created_at=req.created_at,
+        )
+
+    def _finalize_missed_clockin_decision(
+        self,
+        req: MissedClockinRequest,
+        decision: str,
+        reviewer_id: uuid.UUID | None,
+        review_notes: str | None,
+    ) -> None:
+        """Applies an APPROVED/REJECTED decision to a missed clock-in request.
+        Shared by the direct admin approve/reject endpoints and by the generic
+        ApprovalService engine (called from `_update_target_status`) when the
+        ATTENDANCE_CORRECTION workflow is configured in Settings."""
+        if decision == "APPROVED":
+            rule_obj = self.db.scalars(select(AttendanceRule)).first()
+            if not rule_obj:
+                rule_obj = AttendanceRule()
+                self.db.add(rule_obj)
+                self.db.flush()
+
+            attendance, is_new = self._get_or_create_record(req.employee_id, req.attendance_date)
+            if not is_new and attendance.clock_in is not None:
+                raise ValueError("An attendance record with a clock-in already exists for this date.")
+
+            attendance.clock_in = req.requested_clock_in
+            attendance.notes = (
+                (attendance.notes + "\n" if attendance.notes else "")
+                + f"Clock-in approved (missed clockin request #{str(req.id)[:8]})"
+            )
+            if attendance.status in {"ABSENT", "ON_LEAVE", "HOLIDAY"} and not is_new:
+                attendance.status = "PRESENT"
+            elif is_new:
+                attendance.status = "PRESENT"
+
+            self._apply_late(attendance, rule_obj)
+            self._apply_hours(attendance, rule_obj)
+            self._apply_half_day_status(attendance, rule_obj)
+
+        now = _now_utc()
+        req.status = decision
+        req.reviewed_by = reviewer_id
+        req.reviewed_at = now
+        req.review_notes = review_notes
+        self.db.flush()
+        self.db.refresh(req, attribute_names=["employee"])
+        AuditService.log(
+            self.db,
+            "missed_clockin_request",
+            req.id,
+            "APPROVE" if decision == "APPROVED" else "REJECT",
+            performed_by=reviewer_id,
+            new_value={
+                "employee_id": str(req.employee_id),
+                "attendance_date": str(req.attendance_date),
+                "review_notes": review_notes,
+                **(
+                    {"approved_clock_in": req.requested_clock_in.isoformat()}
+                    if decision == "APPROVED"
+                    else {}
+                ),
+            },
         )
 
     def submit_missed_clockin_request(
@@ -986,6 +1085,23 @@ class AttendanceService:
                     "reason": data.reason,
                 },
             )
+            # Route the request through the Settings-configured ATTENDANCE_CORRECTION
+            # approval workflow (same pattern as Leave/Timesheet). If no active workflow
+            # is configured, initialize_approval_flow raises ValueError and submission
+            # is blocked — the router turns this into a 400.
+            from app.services.approval_service import ApprovalService
+
+            approval_svc = ApprovalService(self.db, self.current_user_id)
+            flow_status = approval_svc.initialize_approval_flow(
+                "ATTENDANCE_CORRECTION", req.id, employee_id
+            )
+            if flow_status == "APPROVED":
+                self._finalize_missed_clockin_decision(
+                    req,
+                    "APPROVED",
+                    reviewer_id=None,
+                    review_notes="Auto-approved: no approver resolved in the configured workflow.",
+                )
             self.db.commit()
             self.db.refresh(req)
             self.db.refresh(req, attribute_names=["employee"])
@@ -1031,54 +1147,10 @@ class AttendanceService:
         if self.current_user_id is not None and req.employee_id == self.current_user_id:
             raise ValueError("You cannot approve your own missed clock-in request.")
 
-        rule_obj = self.db.scalars(select(AttendanceRule)).first()
-        if not rule_obj:
-            rule_obj = AttendanceRule()
-            self.db.add(rule_obj)
-            self.db.flush()
-
-        attendance, is_new = self._get_or_create_record(req.employee_id, req.attendance_date)
-        
-        if not is_new and attendance.clock_in is not None:
-            raise ValueError("An attendance record with a clock-in already exists for this date.")
-
-        attendance.clock_in = req.requested_clock_in
-        attendance.notes = (
-            (attendance.notes + "\n" if attendance.notes else "")
-            + f"Clock-in approved by admin (missed clockin request #{str(req.id)[:8]})"
-        )
-        
-        if attendance.status in {"ABSENT", "ON_LEAVE", "HOLIDAY"} and not is_new:
-            attendance.status = "PRESENT"
-        elif is_new:
-            attendance.status = "PRESENT"
-
-        self._apply_late(attendance, rule_obj)
-        self._apply_hours(attendance, rule_obj)
-        self._apply_half_day_status(attendance, rule_obj)
-
-        now = _now_utc()
-        req.status = "APPROVED"
-        req.reviewed_by = self.current_user_id
-        req.reviewed_at = now
-        req.review_notes = review_notes
+        self._guard_no_active_approval_flow("ATTENDANCE_CORRECTION", req.id)
 
         try:
-            self.db.flush()
-            self.db.refresh(req, attribute_names=["employee"])
-            AuditService.log(
-                self.db,
-                "missed_clockin_request",
-                req.id,
-                "APPROVE",
-                performed_by=self.current_user_id,
-                new_value={
-                    "employee_id": str(req.employee_id),
-                    "attendance_date": str(req.attendance_date),
-                    "approved_clock_in": req.requested_clock_in.isoformat(),
-                    "review_notes": review_notes,
-                },
-            )
+            self._finalize_missed_clockin_decision(req, "APPROVED", self.current_user_id, review_notes)
             self.db.commit()
             self.db.refresh(req)
             self.db.refresh(req, attribute_names=["employee"])
@@ -1099,27 +1171,10 @@ class AttendanceService:
         if req.status != "PENDING":
             raise ValueError(f"Request is already {req.status}.")
 
-        now = _now_utc()
-        req.status = "REJECTED"
-        req.reviewed_by = self.current_user_id
-        req.reviewed_at = now
-        req.review_notes = review_notes
+        self._guard_no_active_approval_flow("ATTENDANCE_CORRECTION", req.id)
 
         try:
-            self.db.flush()
-            self.db.refresh(req, attribute_names=["employee"])
-            AuditService.log(
-                self.db,
-                "missed_clockin_request",
-                req.id,
-                "REJECT",
-                performed_by=self.current_user_id,
-                new_value={
-                    "employee_id": str(req.employee_id),
-                    "attendance_date": str(req.attendance_date),
-                    "review_notes": review_notes,
-                },
-            )
+            self._finalize_missed_clockin_decision(req, "REJECTED", self.current_user_id, review_notes)
             self.db.commit()
             self.db.refresh(req)
             self.db.refresh(req, attribute_names=["employee"])
