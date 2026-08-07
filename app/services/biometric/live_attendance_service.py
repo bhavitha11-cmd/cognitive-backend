@@ -91,7 +91,29 @@ class LiveAttendanceService:
             first_in_log = elogs[0]
             last_punch_log = elogs[-1]
 
-            current_status = "IN" if last_punch_log.punch_type == "IN" else "OUT"
+            def _ensure_tz(dt: datetime) -> datetime:
+                if dt and dt.tzinfo is None:
+                    return dt.replace(tzinfo=timezone.utc)
+                return dt
+
+            first_in_ts = _ensure_tz(first_in_log.punch_timestamp)
+            last_punch_ts = _ensure_tz(last_punch_log.punch_timestamp)
+
+            # Determine log's midnight end in org timezone
+            from app.core.org_time import to_org, ORG_TZ
+            log_org_dt = to_org(last_punch_ts)
+            log_end_local = datetime(log_org_dt.year, log_org_dt.month, log_org_dt.day, 23, 59, 59, 999999, tzinfo=ORG_TZ)
+            log_end_utc = log_end_local.astimezone(timezone.utc)
+
+            # Determine if midnight 12:00 AM of target date OR log date has passed
+            is_past_midnight = (now_utc > end_utc) or (now_utc > log_end_utc)
+
+            if is_past_midnight:
+                # Midnight 12:00 AM of target date/log date has passed. If employee forgot to punch out,
+                # consider their status as OUT and last punch time as the out time.
+                current_status = "OUT"
+            else:
+                current_status = "IN" if last_punch_log.punch_type == "IN" else "OUT"
 
             # Calculate total inside time
             total_in_seconds = 0
@@ -99,21 +121,28 @@ class LiveAttendanceService:
 
             for l in elogs:
                 ptype = (l.punch_type or "IN").upper()
+                pts = _ensure_tz(l.punch_timestamp)
                 if ptype == "IN":
                     if in_start is None:
-                        in_start = l.punch_timestamp
+                        in_start = pts
                 elif ptype == "OUT":
                     if in_start is not None:
-                        total_in_seconds += int((l.punch_timestamp - in_start).total_seconds())
+                        total_in_seconds += int((pts - in_start).total_seconds())
                         in_start = None
 
             if in_start is not None:
-                eff_end = min(now_utc, end_utc)
-                if eff_end > in_start:
-                    total_in_seconds += int((eff_end - in_start).total_seconds())
+                if not is_past_midnight:
+                    eff_end = min(now_utc, log_end_utc)
+                    if eff_end > in_start:
+                        total_in_seconds += int((eff_end - in_start).total_seconds())
+                else:
+                    # Midnight has passed; treat last punch time as the OUT time for unclosed session
+                    eff_end = max(in_start, last_punch_ts)
+                    if eff_end > in_start:
+                        total_in_seconds += int((eff_end - in_start).total_seconds())
 
-            eff_last = max(last_punch_log.punch_timestamp, now_utc) if current_status == "IN" else last_punch_log.punch_timestamp
-            total_elapsed_seconds = int((eff_last - first_in_log.punch_timestamp).total_seconds())
+            eff_last = max(last_punch_ts, now_utc) if current_status == "IN" else last_punch_ts
+            total_elapsed_seconds = int((eff_last - first_in_ts).total_seconds())
             total_out_seconds = max(0, total_elapsed_seconds - total_in_seconds)
 
             remaining_seconds = max(0, target_work_seconds - total_in_seconds)

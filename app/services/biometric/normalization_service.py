@@ -57,13 +57,7 @@ class NormalizationService:
                 select(BmEmployeeMapping).where(BmEmployeeMapping.id == raw_log.employee_mapping_id)
             )
         if not mapping and raw_log.device_user_id:
-            mapping = self.db.scalar(
-                select(BmEmployeeMapping).where(
-                    BmEmployeeMapping.device_id == raw_log.device_id,
-                    BmEmployeeMapping.biometric_user_id == raw_log.device_user_id,
-                    BmEmployeeMapping.is_active == True
-                )
-            )
+            mapping = self._find_mapping(raw_log.device_id, raw_log.device_user_id)
             if mapping:
                 raw_log.employee_mapping_id = mapping.id
 
@@ -135,6 +129,11 @@ class NormalizationService:
                     continue
                 
                 mapping = mappings_map.get(raw_log.employee_mapping_id) if raw_log.employee_mapping_id else None
+                if not mapping and raw_log.device_user_id and raw_log.device_id:
+                    mapping = find_employee_mapping(self.db, raw_log.device_id, raw_log.device_user_id)
+                    if mapping:
+                        raw_log.employee_mapping_id = mapping.id
+
                 employee_id = mapping.employee_id if (mapping and mapping.is_active) else None
                 
                 normalized_punch_type = self._normalize_punch_type(raw_log.punch_type, raw_log.verification_type)
@@ -182,3 +181,46 @@ class NormalizationService:
             return "OUT"
         else:
             return "UNKNOWN"
+
+    def _find_mapping(self, device_id: uuid.UUID, device_user_id: str) -> Optional[BmEmployeeMapping]:
+        """Find employee mapping trying exact string match, digit zfill, and stripped CET prefixes."""
+        return find_employee_mapping(self.db, device_id, device_user_id)
+
+
+def find_employee_mapping(db: Session, device_id: uuid.UUID, device_user_id: str) -> Optional[BmEmployeeMapping]:
+    """
+    Find employee mapping trying exact match, zero-padded digits, unpadded digits,
+    and CET-prefixed formats.
+    """
+    import re
+    if not device_user_id or not device_id:
+        return None
+
+    user_str = str(device_user_id).strip()
+    digits = re.sub(r'\D', '', user_str)
+    candidates = [user_str]
+    if digits:
+        candidates.append(digits.zfill(3))
+        candidates.append(digits)
+        candidates.append(f"CET{digits.zfill(3)}")
+        candidates.append(f"CET{digits}")
+        candidates.append(f"CET{user_str}")
+        stripped = re.sub(r'^[A-Za-z]+', '', user_str).lstrip('0') or '0'
+        candidates.append(stripped.zfill(3))
+        candidates.append(stripped)
+
+    seen = set()
+    for cand in candidates:
+        if cand and cand not in seen:
+            seen.add(cand)
+            m = db.scalar(
+                select(BmEmployeeMapping).where(
+                    BmEmployeeMapping.device_id == device_id,
+                    BmEmployeeMapping.biometric_user_id == cand,
+                    BmEmployeeMapping.is_active == True
+                )
+            )
+            if m:
+                return m
+    return None
+

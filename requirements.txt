@@ -17,3 +17,5 @@ requests
 cryptography
 apscheduler>=3.10.0
 apscheduler[redis]>=3.10.0
+pyzk>=0.9
+

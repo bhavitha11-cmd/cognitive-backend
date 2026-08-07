@@ -57,17 +57,21 @@ class EmployeeService:
 
     def _generate_employee_code(self) -> str:
         from sqlalchemy import func as _func, cast, Integer
-        # Compute the max numeric suffix so codes stay monotonic beyond EMP-999.
-        # (String MAX would rank "EMP-99" above "EMP-100".)
+        # Compute the max numeric suffix so codes stay monotonic beyond CET-999.
         max_num = self.repo.db.scalar(
             select(
                 _func.max(
                     cast(_func.split_part(Employee.employee_code, "-", 2), Integer)
                 )
-            ).where(Employee.employee_code.like("EMP-%"))
+            ).where(
+                or_(
+                    Employee.employee_code.like("CET-%"),
+                    Employee.employee_code.like("EMP-%")
+                )
+            )
         )
         next_num = (max_num or 0) + 1
-        return f"EMP-{next_num:03d}"
+        return f"CET-{next_num:03d}"
 
     def _build_list_response(self, employee: Employee) -> EmployeeListResponse:
         role_ids = [str(er.role_id) for er in employee.employee_roles if er.is_active]

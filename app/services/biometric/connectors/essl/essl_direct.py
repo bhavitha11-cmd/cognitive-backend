@@ -342,14 +342,14 @@ class ESSLDirectConnector(BiometricConnector):
 
             try:
                 if pwd_int > 0:
-                    zk = ZK(self.ip_address, port=self.port, timeout=self.timeout, password=pwd_int)
+                    zk = ZK(self.ip_address, port=self.port, timeout=self.timeout, password=pwd_int, force_udp=True, ommit_ping=True)
                     conn = zk.connect()
                 else:
-                    zk = ZK(self.ip_address, port=self.port, timeout=self.timeout)
+                    zk = ZK(self.ip_address, port=self.port, timeout=self.timeout, force_udp=True, ommit_ping=True)
                     conn = zk.connect()
             except Exception as conn_err:
                 logger.warning(f"[eSSL/pyzk] Password connection failed ({conn_err}), retrying without password...")
-                zk = ZK(self.ip_address, port=self.port, timeout=self.timeout)
+                zk = ZK(self.ip_address, port=self.port, timeout=self.timeout, force_udp=True, ommit_ping=True)
                 conn = zk.connect()
             try:
                 raw_atts = conn.get_attendance()

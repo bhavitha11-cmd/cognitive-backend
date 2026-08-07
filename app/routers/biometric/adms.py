@@ -21,10 +21,11 @@ from app.database.session import get_db
 from app.models.biometric.bm_device import BmDevice
 from app.models.biometric.bm_raw_log import BmRawLog
 from app.models.biometric.bm_employee_mapping import BmEmployeeMapping
-from app.services.biometric.normalization_service import NormalizationService
+from app.services.biometric.normalization_service import NormalizationService, find_employee_mapping
 from app.core.org_time import ORG_TZ
 
 logger = logging.getLogger(__name__)
+
 
 router = APIRouter(tags=["ADMS Biometric Push"])
 
@@ -42,7 +43,9 @@ def _parse_adms_datetime(dt_str: str) -> Optional[datetime]:
 
 
 @router.get("/iclock/cdata")
+@router.get("/iclock/cdata.aspx")
 @router.get("/adms/iclock/cdata")
+@router.get("/adms/iclock/cdata.aspx")
 def adms_handshake(
     SN: Optional[str] = Query(None),
     options: Optional[str] = Query(None),
@@ -61,13 +64,16 @@ def adms_handshake(
 
 
 @router.post("/iclock/cdata")
+@router.post("/iclock/cdata.aspx")
 @router.post("/adms/iclock/cdata")
+@router.post("/adms/iclock/cdata.aspx")
 async def adms_push_attendance(
     request: Request,
     SN: Optional[str] = Query(None),
     table: Optional[str] = Query("ATTLOG"),
     db: Session = Depends(get_db),
 ):
+
     """
     ADMS Real-Time Attendance Push POST handler.
     Device sends tab-separated text payload of attendance logs:
@@ -131,15 +137,10 @@ async def adms_push_attendance(
                 # Find employee mapping
                 mapping_id = None
                 if device_id:
-                    mapping = db.scalar(
-                        select(BmEmployeeMapping).where(
-                            BmEmployeeMapping.device_id == device_id,
-                            BmEmployeeMapping.biometric_user_id == user_id,
-                            BmEmployeeMapping.is_active == True,
-                        )
-                    )
+                    mapping = find_employee_mapping(db, device_id, user_id)
                     if mapping:
                         mapping_id = mapping.id
+
 
                 raw_log = BmRawLog(
                     device_id=device_id,
@@ -182,14 +183,19 @@ async def adms_push_attendance(
 
 
 @router.get("/iclock/getrequest")
+@router.get("/iclock/getrequest.aspx")
 @router.get("/adms/iclock/getrequest")
+@router.get("/adms/iclock/getrequest.aspx")
 def adms_get_request(SN: Optional[str] = Query(None)):
     """Device polls server for pending commands."""
     return Response(content="OK", media_type="text/plain")
 
 
 @router.post("/iclock/devicecmd")
+@router.post("/iclock/devicecmd.aspx")
 @router.post("/adms/iclock/devicecmd")
+@router.post("/adms/iclock/devicecmd.aspx")
 def adms_device_cmd_response(SN: Optional[str] = Query(None)):
     """Device confirms execution of server command."""
     return Response(content="OK", media_type="text/plain")
+
