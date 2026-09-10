@@ -291,6 +291,12 @@ def on_startup():
         # Authorization Platform — seed Module & Feature registry
         from app.core.seeder import run_authorization_seeder
         run_authorization_seeder(db)
+        # Auto-sync leave balances on boot
+        try:
+            from app.database.recompute_leave_balances import sync_all_leave_balances
+            sync_all_leave_balances()
+        except Exception as lbe:
+            logger.warning(f"[Database] Leave balance sync warning: {lbe}")
         logger.info("[Database] Startup seeding completed successfully.")
     except Exception as e:
         logger.error(f"[Database] Seeding failed: {e}")

@@ -596,16 +596,56 @@ class ApprovalService:
         mod_upper = module_type.upper()
         if mod_upper == "LEAVE":
             from app.models.leave_request import LeaveRequest
+            from app.models.leave_balance import LeaveBalance
             req = self.db.get(LeaveRequest, target_id)
             if req:
+                year = req.from_date.year
+                if status == "APPROVED":
+                    from app.models.leave_type import LeaveType
+                    lt = self.db.get(LeaveType, req.leave_type_id)
+                    lt_code = (lt.code or "").upper() if lt else ""
+                    lt_name = (lt.name or "").lower() if lt else ""
+                    is_capped = lt_code in ("UL", "ML", "PL") or "marriage" in lt_name
+
+                    if is_capped:
+                        balance = self.db.scalar(
+                            select(LeaveBalance)
+                            .where(
+                                LeaveBalance.employee_id == req.employee_id,
+                                LeaveBalance.leave_type_id == req.leave_type_id,
+                                LeaveBalance.year == year,
+                            )
+                            .with_for_update()
+                        )
+                        if balance:
+                            entitlement = float(balance.total_allowed) + float(balance.carried_forward)
+                            used_other = self.db.scalar(
+                                select(func.coalesce(func.sum(LeaveRequest.total_days), 0)).where(
+                                    LeaveRequest.employee_id == req.employee_id,
+                                    LeaveRequest.leave_type_id == req.leave_type_id,
+                                    LeaveRequest.status == "APPROVED",
+                                    func.extract("year", LeaveRequest.from_date) == year,
+                                    LeaveRequest.id != req.id,
+                                )
+                            ) or 0.0
+                            projected_used = float(used_other) + float(req.total_days)
+                            if projected_used > entitlement:
+                                remaining = entitlement - float(used_other)
+                                raise ValueError(
+                                    f"Insufficient {lt.name if lt else 'leave'} balance to approve. Requested {float(req.total_days)} day(s), but only {max(0.0, remaining):.2f} day(s) remaining."
+                                )
+
                 req.status = status
                 if status == "REJECTED":
                     req.rejection_reason = comments
                 elif status == "APPROVED":
                     req.approved_by = actioned_by
                     req.approved_at = datetime.now(timezone.utc)
+                self.db.add(req)
+                self.db.flush()
+
+                if status == "APPROVED":
                     # Recompute used leaves
-                    year = req.from_date.year
                     self._recompute_leave_used(req.employee_id, req.leave_type_id, year)
                     # Create ON_LEAVE attendance records
                     from app.services.leave_service import LeaveService
@@ -618,8 +658,6 @@ class ApprovalService:
                         continuity_svc.detect_and_create_task_risks(req.employee_id, req)
                     except Exception:
                         pass
-                self.db.add(req)
-                self.db.flush()
         elif mod_upper in ("TIME SHEET", "TIMESHEET", "TIME_ENTRY"):
             from app.models.time_entry import TimeEntry
             entry = self.db.get(TimeEntry, target_id)
@@ -654,6 +692,7 @@ class ApprovalService:
     def _recompute_leave_used(self, employee_id: uuid.UUID, leave_type_id: uuid.UUID, year: int) -> None:
         from app.models.leave_balance import LeaveBalance
         from app.models.leave_request import LeaveRequest
+        self.db.flush()
         total_used = self.db.scalar(
             select(func.coalesce(func.sum(LeaveRequest.total_days), 0)).where(
                 LeaveRequest.employee_id == employee_id,

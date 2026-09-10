@@ -359,6 +359,11 @@ class LeaveService:
                     balances = self.db.scalars(balances_query).all()
                 except Exception:
                     pass
+        else:
+            # Recompute used leaves for each balance to ensure sync with approved requests
+            for b in balances:
+                self._recompute_used(employee_id, b.leave_type_id, year)
+            self.db.commit()
 
         # Sort the balances by leave_type_id to maintain consistent order
         balances = sorted(balances, key=lambda b: b.leave_type_id)
@@ -475,6 +480,7 @@ class LeaveService:
     def _recompute_used(
         self, employee_id: UUID, leave_type_id: UUID, year: int
     ) -> None:
+        self.db.flush()
         total_used = self.db.scalar(
             select(func.coalesce(func.sum(LeaveRequest.total_days), 0)).where(
                 LeaveRequest.employee_id == employee_id,
@@ -604,16 +610,20 @@ class LeaveService:
             .with_for_update()  # Lock the row to prevent concurrent over-allocation
         )
 
-        # Check sufficient balance
+        # Check sufficient balance for capped leave types (e.g. Marriage Leave)
+        lt_code = (lt.code or "").upper()
+        lt_name = (lt.name or "").lower()
+        is_capped = lt_code in ("UL", "ML", "PL") or "marriage" in lt_name
+
         remaining = (
             float(balance.total_allowed)
             + float(balance.carried_forward)
             - float(balance.used)
         )
-        if remaining < total_days:
+        if is_capped and remaining < total_days:
             raise ValueError(
-                f"Insufficient leave balance. Requested {total_days} day(s), "
-                f"but only {remaining:.2f} day(s) remaining."
+                f"Insufficient {lt.name} balance. Requested {total_days} day(s), "
+                f"but only {max(0.0, remaining):.2f} day(s) remaining."
             )
 
         # Check for overlapping PENDING or APPROVED requests
@@ -814,36 +824,42 @@ class LeaveService:
             # apply-time (APPROVED-only) check, so we must re-check here with a
             # row-level lock before flipping this request to APPROVED.
             if action == "APPROVED":
-                balance = self.db.scalar(
-                    select(LeaveBalance)
-                    .where(
-                        LeaveBalance.employee_id == req.employee_id,
-                        LeaveBalance.leave_type_id == req.leave_type_id,
-                        LeaveBalance.year == year,
-                    )
-                    .with_for_update()  # lock to prevent concurrent over-allocation
-                )
-                if balance:
-                    entitlement = (
-                        float(balance.total_allowed) + float(balance.carried_forward)
-                    )
-                    # Already-approved usage excluding this (still-PENDING) request.
-                    used_other = self.db.scalar(
-                        select(func.coalesce(func.sum(LeaveRequest.total_days), 0)).where(
-                            LeaveRequest.employee_id == req.employee_id,
-                            LeaveRequest.leave_type_id == req.leave_type_id,
-                            LeaveRequest.status == "APPROVED",
-                            func.extract("year", LeaveRequest.from_date) == year,
+                lt = self.db.get(LeaveType, req.leave_type_id)
+                lt_code = (lt.code or "").upper() if lt else ""
+                lt_name = (lt.name or "").lower() if lt else ""
+                is_capped = lt_code in ("UL", "ML", "PL") or "marriage" in lt_name
+
+                if is_capped:
+                    balance = self.db.scalar(
+                        select(LeaveBalance)
+                        .where(
+                            LeaveBalance.employee_id == req.employee_id,
+                            LeaveBalance.leave_type_id == req.leave_type_id,
+                            LeaveBalance.year == year,
                         )
-                    ) or 0.0
-                    projected_used = float(used_other) + float(req.total_days)
-                    if projected_used > entitlement:
-                        remaining = entitlement - float(used_other)
-                        raise ValueError(
-                            f"Insufficient leave balance to approve. Requested "
-                            f"{float(req.total_days)} day(s), but only {remaining:.2f} "
-                            f"day(s) remaining."
+                        .with_for_update()  # lock to prevent concurrent over-allocation
+                    )
+                    if balance:
+                        entitlement = (
+                            float(balance.total_allowed) + float(balance.carried_forward)
                         )
+                        # Already-approved usage excluding this (still-PENDING) request.
+                        used_other = self.db.scalar(
+                            select(func.coalesce(func.sum(LeaveRequest.total_days), 0)).where(
+                                LeaveRequest.employee_id == req.employee_id,
+                                LeaveRequest.leave_type_id == req.leave_type_id,
+                                LeaveRequest.status == "APPROVED",
+                                func.extract("year", LeaveRequest.from_date) == year,
+                            )
+                        ) or 0.0
+                        projected_used = float(used_other) + float(req.total_days)
+                        if projected_used > entitlement:
+                            remaining = entitlement - float(used_other)
+                            raise ValueError(
+                                f"Insufficient {lt.name if lt else 'leave'} balance to approve. Requested "
+                                f"{float(req.total_days)} day(s), but only {max(0.0, remaining):.2f} "
+                                f"day(s) remaining."
+                            )
 
             req.status = action
             req.approved_by = self.current_user_id
